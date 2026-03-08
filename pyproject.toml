@@ -1,0 +1,18 @@
+[project]
+name = "suralink-to-box"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "box-sdk-gen>=1.17.0",
+    "httpx>=0.28.1",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.13.1",
+    "python-dotenv>=1.2.2",
+    "rich>=14.3.3",
+    "tenacity>=9.1.4",
+]
+
+[tool.uv]
+package = true
