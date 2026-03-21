@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "box-sdk-gen>=1.17.0",
+    "cryptography>=46.0.1",
     "httpx>=0.28.1",
+    "pyjwt>=2.10.1",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.13.1",
     "python-dotenv>=1.2.2",

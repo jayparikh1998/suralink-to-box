@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     box_developer_token: str | None = None
     box_jwt_config_path: str | None = None
     box_target_folder_id: str | None = None
+    box_as_user_id: str | None = None
 
 
     # App behavior
