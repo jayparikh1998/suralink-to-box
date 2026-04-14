@@ -119,13 +119,13 @@ def _pick_client_id(client_obj: dict | None) -> str | None:
 def _resolve_client_folder_name(engagement: dict, configured_customer_name: str) -> str:
     detected = (_pick_customer_name(engagement) or "").strip()
     if detected:
-        return detected
+        return f"Suralink - {detected}"
 
     configured = configured_customer_name.strip()
     if configured:
-        return configured
+        return f"Suralink - {configured}"
 
-    return "unknown_client"
+    return "Suralink - unknown_client"
 
 
 def _fetch_all_requests(client: SuralinkClient, engagement_id: str) -> list[dict]:
