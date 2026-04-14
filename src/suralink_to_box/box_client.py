@@ -4,6 +4,7 @@ import io
 import json
 import tempfile
 from dataclasses import dataclass
+from io import BufferedIOBase
 from pathlib import Path
 from textwrap import wrap
 
@@ -178,5 +179,31 @@ def upload_bytes_to_box(
     attrs = UploadFileAttributes(name=file_name, parent=parent)
 
     stream = io.BytesIO(content)
-    uploaded = client.uploads.upload_file(attributes=attrs, file=stream).entries[0]
+    return upload_stream_to_box(
+        client,
+        folder_id=folder_id,
+        file_name=file_name,
+        stream=stream,
+    )
+
+
+def upload_stream_to_box(
+    client: BoxClient,
+    *,
+    folder_id: str,
+    file_name: str,
+    stream: BufferedIOBase,
+    content_type: str | None = None,
+) -> BoxUploadResult:
+    """
+    Upload a file-like binary stream into the target Box folder.
+    """
+    parent = UploadFileAttributesParentField(id=str(folder_id), type="folder")
+    attrs = UploadFileAttributes(name=file_name, parent=parent)
+
+    uploaded = client.uploads.upload_file(
+        attributes=attrs,
+        file=stream,
+        file_content_type=content_type,
+    ).entries[0]
     return BoxUploadResult(file_id=str(uploaded.id), file_name=str(uploaded.name))

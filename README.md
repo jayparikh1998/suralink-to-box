@@ -128,9 +128,9 @@ uv run python -m suralink_to_box.main
 
 For each selected engagement, the app:
 - lists engagement files from Suralink
-- downloads each file
+- streams each file from Suralink
 - creates the target folder structure in Box if needed
-- uploads the file into Box
+- streams the file into Box
 - records the sync in `sync_state.db`
 
 ## Sync Tracking
@@ -143,6 +143,16 @@ This prevents duplicate uploads across runs.
 
 If a file already exists in Box with the same name and Box returns a conflict, the app marks it as synced and skips re-uploading it.
 
+## Transfer Behavior
+
+Files are not written to the local filesystem during sync.
+
+The current flow is:
+- open a streamed HTTP download from Suralink
+- pass that stream directly into the Box upload request
+
+So this avoids local file saves and avoids buffering the whole file in memory, but it is still not a true vendor-to-vendor server-side transfer. The app remains in the middle of the stream.
+
 ## Verification
 
 Fast verification command:
@@ -153,6 +163,5 @@ uv run python -m compileall src
 
 ## Notes
 
-- `downloads/` is used as a temporary local save location before upload
 - `README.md` documents current behavior, but actual runtime behavior is defined by the code in `src/suralink_to_box/`
 - Do not commit secrets in `.env`

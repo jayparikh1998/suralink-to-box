@@ -1,9 +1,8 @@
 from suralink_to_box.settings import get_settings
 from suralink_to_box.suralink_client import SuralinkClient
-from suralink_to_box.file_utils import save_bytes
 from suralink_to_box.box_client import (
     get_box_client,
-    upload_bytes_to_box,
+    upload_stream_to_box,
     ensure_box_subfolder,
     resolve_box_folder_path,
 )
@@ -375,24 +374,26 @@ def main() -> None:
                     continue
 
                 try:
-                    downloaded = client.download_engagement_file(
+                    with client.stream_engagement_file(
                         audit_id=engagement_id,
                         request_id=request_id,
                         file_id=file_id,
                         fallback_filename=file_name,
-                    )
+                    ) as downloaded:
+                        print("Streaming file from Suralink to Box")
+                        print(f"Content-Type: {downloaded.content_type}")
+                        if downloaded.content_length is not None:
+                            print(f"Size (bytes): {downloaded.content_length}")
+                        else:
+                            print("Size (bytes): unknown")
 
-                    out_path = save_bytes(f"downloads/{downloaded.filename}", downloaded.data)
-                    print(f"Downloaded -> {out_path}")
-                    print(f"Content-Type: {downloaded.content_type}")
-                    print(f"Size (bytes): {len(downloaded.data)}")
-
-                    result = upload_bytes_to_box(
-                        box_client,
-                        folder_id=folder_id,
-                        file_name=downloaded.filename,
-                        content=downloaded.data,
-                    )
+                        result = upload_stream_to_box(
+                            box_client,
+                            folder_id=folder_id,
+                            file_name=downloaded.filename,
+                            stream=downloaded.stream,
+                            content_type=downloaded.content_type,
+                        )
 
                     print("Upload complete")
                     print(f"Box File Name: {result.file_name}")
