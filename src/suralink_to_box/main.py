@@ -440,6 +440,7 @@ def sync_to_box(
                             file_name=downloaded.filename,
                             stream=downloaded.stream,
                             content_type=downloaded.content_type,
+                            content_length=downloaded.content_length,
                         )
 
                     log("Upload complete")

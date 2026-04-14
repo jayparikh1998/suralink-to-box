@@ -27,6 +27,24 @@ class BoxFolderResult:
     folder_name: str
 
 
+class _SizedStream(BufferedIOBase):
+    def __init__(self, base_stream: BufferedIOBase, content_length: int):
+        self._base_stream = base_stream
+        self.len = content_length
+
+    def read(self, size: int = -1) -> bytes:
+        return self._base_stream.read(size)
+
+    def tell(self) -> int:
+        return self._base_stream.tell()
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        return self._base_stream.seek(offset, whence)
+
+    def readable(self) -> bool:
+        return True
+
+
 def _normalize_box_private_key(private_key: str) -> str:
     key = private_key.strip().replace("\r\n", "\n").replace("\r", "\n")
     if "-----BEGIN" in key and "-----END" in key:
@@ -194,6 +212,7 @@ def upload_stream_to_box(
     file_name: str,
     stream: BufferedIOBase,
     content_type: str | None = None,
+    content_length: int | None = None,
 ) -> BoxUploadResult:
     """
     Upload a file-like binary stream into the target Box folder.
@@ -201,9 +220,15 @@ def upload_stream_to_box(
     parent = UploadFileAttributesParentField(id=str(folder_id), type="folder")
     attrs = UploadFileAttributes(name=file_name, parent=parent)
 
+    upload_stream: BufferedIOBase
+    if content_length is not None:
+        upload_stream = _SizedStream(stream, content_length)
+    else:
+        upload_stream = io.BytesIO(stream.read())
+
     uploaded = client.uploads.upload_file(
         attributes=attrs,
-        file=stream,
+        file=upload_stream,
         file_content_type=content_type,
     ).entries[0]
     return BoxUploadResult(file_id=str(uploaded.id), file_name=str(uploaded.name))
