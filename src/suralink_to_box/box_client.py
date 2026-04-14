@@ -8,7 +8,7 @@ from io import BufferedIOBase
 from pathlib import Path
 from textwrap import wrap
 
-from suralink_to_box.settings import get_settings
+from suralink_to_box.settings import Settings, get_settings
 
 from box_sdk_gen import BoxClient, BoxDeveloperTokenAuth, BoxJWTAuth, JWTConfig
 from box_sdk_gen import UploadFileAttributes, UploadFileAttributesParentField
@@ -75,13 +75,13 @@ def _load_jwt_config(config_path: str) -> JWTConfig:
             Path(temp_path).unlink(missing_ok=True)
 
 
-def get_box_client() -> BoxClient:
+def get_box_client(settings: Settings | None = None) -> BoxClient:
     """
     Creates a Box client based on .env settings.
     - developer_token: easiest for testing
     - jwt: server-to-server
     """
-    s = get_settings()
+    s = settings or get_settings()
 
     method = (getattr(s, "box_auth_method", None) or "").strip().lower()
     if not method:

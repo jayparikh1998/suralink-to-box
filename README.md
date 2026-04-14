@@ -124,6 +124,19 @@ Run the sync:
 uv run python -m suralink_to_box.main
 ```
 
+Run the Streamlit UI:
+
+```bash
+uv run streamlit run app.py
+```
+
+The Streamlit UI lets a user enter:
+- `Suralink Customer Name`
+- `Suralink Engagement ID`
+- `Box Target Folder Path`
+
+If both customer name and engagement ID are entered, engagement ID takes priority.
+
 ## What the App Does
 
 For each selected engagement, the app:
