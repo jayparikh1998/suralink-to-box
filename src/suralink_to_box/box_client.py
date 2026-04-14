@@ -139,6 +139,31 @@ def ensure_box_subfolder(
     return BoxFolderResult(folder_id=str(created.id), folder_name=str(created.name))
 
 
+def resolve_box_folder_path(
+    client: BoxClient,
+    *,
+    root_folder_id: str,
+    folder_path: str,
+) -> BoxFolderResult:
+    """
+    Resolve a slash-delimited Box path from the given root folder, creating any
+    missing intermediate folders along the way.
+    """
+    parts = [part.strip() for part in folder_path.split("/") if part.strip()]
+    if not parts:
+        return BoxFolderResult(folder_id=str(root_folder_id), folder_name="")
+
+    current = BoxFolderResult(folder_id=str(root_folder_id), folder_name="")
+    for part in parts:
+        current = ensure_box_subfolder(
+            client,
+            parent_folder_id=current.folder_id,
+            folder_name=part,
+        )
+
+    return current
+
+
 def upload_bytes_to_box(
     client: BoxClient,
     *,

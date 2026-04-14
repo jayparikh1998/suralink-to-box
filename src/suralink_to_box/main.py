@@ -1,7 +1,12 @@
 from suralink_to_box.settings import get_settings
 from suralink_to_box.suralink_client import SuralinkClient
 from suralink_to_box.file_utils import save_bytes
-from suralink_to_box.box_client import get_box_client, upload_bytes_to_box, ensure_box_subfolder
+from suralink_to_box.box_client import (
+    get_box_client,
+    upload_bytes_to_box,
+    ensure_box_subfolder,
+    resolve_box_folder_path,
+)
 from suralink_to_box.sync_tracker import SyncTracker
 
 
@@ -14,6 +19,32 @@ def _pick_id(obj: dict, keys: list[str]) -> str | None:
         if v is not None:
             return str(v)
     return None
+
+
+def _resolve_box_destination_settings(settings) -> tuple[str, str]:
+    """
+    Normalize Box destination settings.
+
+    `BOX_TARGET_FOLDER_ID` must be a real Box folder id. For convenience, if a
+    user puts a folder name/path there instead, treat it as a path rooted at
+    Box's root folder.
+    """
+    raw_folder_id = (getattr(settings, "box_target_folder_id", None) or "0").strip()
+    raw_folder_path = (getattr(settings, "box_target_folder_path", None) or "").strip()
+
+    if raw_folder_path:
+        return raw_folder_id or "0", raw_folder_path
+
+    # Box folder ids are numeric strings. If a user entered a folder name like
+    # "JayTestFolder", interpret it as a path instead of crashing on the API call.
+    if raw_folder_id and not raw_folder_id.isdigit():
+        print(
+            "BOX_TARGET_FOLDER_ID does not look like a Box folder id. "
+            f"Treating '{raw_folder_id}' as BOX_TARGET_FOLDER_PATH under root."
+        )
+        return "0", raw_folder_id
+
+    return raw_folder_id or "0", raw_folder_path
 
 
 def _pick_name(obj: dict | None) -> str:
@@ -243,7 +274,16 @@ def main() -> None:
             return
 
         box_client = get_box_client()
-        root_folder_id = (getattr(s, "box_target_folder_id", None) or "0").strip()
+        root_folder_id, root_folder_path = _resolve_box_destination_settings(s)
+        destination_root = (
+            resolve_box_folder_path(
+                box_client,
+                root_folder_id=root_folder_id,
+                folder_path=root_folder_path,
+            )
+            if root_folder_path
+            else None
+        )
 
         total_engagements_with_files = 0
         total_files_found = 0
@@ -286,9 +326,15 @@ def main() -> None:
                 if rid:
                     request_map[rid] = request
 
+            client_parent_folder_id = (
+                destination_root.folder_id
+                if destination_root
+                else root_folder_id
+            )
+
             client_folder = ensure_box_subfolder(
                 box_client,
-                parent_folder_id=root_folder_id,
+                parent_folder_id=client_parent_folder_id,
                 folder_name=client_name,
             )
             engagement_folder = ensure_box_subfolder(
@@ -297,9 +343,13 @@ def main() -> None:
                 folder_name=engagement_name,
             )
             folder_id = engagement_folder.folder_id
+            path_parts = []
+            if root_folder_path:
+                path_parts.append(root_folder_path.strip("/"))
+            path_parts.append(client_folder.folder_name)
+            path_parts.append(engagement_folder.folder_name)
             print(
-                f"Using Box folder path: {client_folder.folder_name} / "
-                f"{engagement_folder.folder_name} (id={folder_id})"
+                f"Using Box folder path: {' / '.join(path_parts)} (id={folder_id})"
             )
 
             print(f"Found {len(files)} file(s) in engagement.")
