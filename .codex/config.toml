@@ -7,11 +7,11 @@ approval_policy = "on-request"
 [features]
 # If you want shell via MCP server, disable the built-in shell tool
 # to prevent tool conflicts/duplication.
-shell_tool = false #  [oai_citation:7‡OpenAI Developers](https://developers.openai.com/codex/config-reference)
+shell_tool = true #  [oai_citation:7‡OpenAI Developers](https://developers.openai.com/codex/config-reference)
 
-[mcp_servers.shell]
-command = "npx"
-args = ["-y", "@openai/codex-shell-tool-mcp"]
+# [mcp_servers.shell]
+# command = "npx"
+# args = ["-y", "@openai/codex-shell-tool-mcp"]
 
 # Optional: only expose some MCP tools (if your MCP server provides many)
 # [mcp_servers.shell]

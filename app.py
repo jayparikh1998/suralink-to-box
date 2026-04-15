@@ -13,19 +13,54 @@ st.set_page_config(
 st.title("Suralink to Box")
 st.caption("Sync Suralink engagement files into Box using the existing project credentials.")
 with st.form("sync_form"):
-    st.subheader("Sync Inputs")
-    customer_name = st.text_input(
-        "Suralink Customer Name",
-        help="Use this to sync all engagements for a customer by name.",
+    st.subheader("Sync Setup")
+    sync_mode = st.radio(
+        "What do you want to sync?",
+        options=("Single engagement", "Customer"),
+        horizontal=True,
+        help="Choose whether to sync one engagement or all engagements for a customer.",
     )
-    engagement_id = st.text_input(
-        "Suralink Engagement ID",
-        help="Use this to sync a single engagement. If provided, it takes priority over customer name.",
-    )
+
+    engagement_id = ""
+    customer_name = ""
+    if sync_mode == "Single engagement":
+        engagement_id = st.text_input(
+            "Suralink Engagement ID",
+            help="Sync one specific engagement by ID.",
+            placeholder="Example: 12345",
+        )
+    else:
+        customer_name = st.text_input(
+            "Suralink Customer Name",
+            help="Sync all engagements for a customer by name.",
+            placeholder="Example: Acme Corp",
+        )
+
     box_target_folder_path = st.text_input(
         "Box Target Folder Path",
         help="Example: Clients/2026 Uploads. Existing folders are reused; missing folders are created.",
+        placeholder="Example: Clients/2026 Uploads",
     )
+
+    st.markdown("### Preflight Summary")
+    source_label = (
+        f"Engagement ID `{engagement_id.strip()}`"
+        if sync_mode == "Single engagement" and engagement_id.strip()
+        else f"Customer `{customer_name.strip()}`"
+        if sync_mode == "Customer" and customer_name.strip()
+        else "Not set yet"
+    )
+    destination_label = box_target_folder_path.strip() or "Box root folder"
+
+    preflight_col1, preflight_col2 = st.columns(2)
+    preflight_col1.info(f"Source: {source_label}")
+    preflight_col2.info(f"Destination: `{destination_label}`")
+
+    if sync_mode == "Single engagement" and not engagement_id.strip():
+        st.warning("Enter a Suralink engagement ID to run this sync.")
+    if sync_mode == "Customer" and not customer_name.strip():
+        st.warning("Enter a Suralink customer name to run this sync.")
+
     submitted = st.form_submit_button("Start Sync", use_container_width=True)
 
 
@@ -43,8 +78,10 @@ def render_logs() -> None:
 if submitted:
     st.session_state["sync_logs"] = []
 
-    if not engagement_id.strip() and not customer_name.strip():
-        st.error("Enter either a Suralink customer name or a Suralink engagement ID.")
+    if sync_mode == "Single engagement" and not engagement_id.strip():
+        st.error("Enter a Suralink engagement ID.")
+    elif sync_mode == "Customer" and not customer_name.strip():
+        st.error("Enter a Suralink customer name.")
     else:
         def append_log(message: str) -> None:
             logs = st.session_state.setdefault("sync_logs", [])
