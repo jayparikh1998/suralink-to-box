@@ -180,6 +180,9 @@ class SuralinkClient:
         )
         return self._unwrap_list_response(payload)
 
+    def get_request_item_detail(self, engagement_id: str, request_id: str):
+        return self.get_json(f"/v1/engagements/{engagement_id}/request-item/{request_id}")
+
     def list_engagement_files(self, engagement_id: str, *, limit: int = 50, offset: int = 0):
         payload = self.get_json(
             f"/v1/files/engagement/{engagement_id}?limit={limit}&offset={offset}"
