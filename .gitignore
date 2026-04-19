@@ -1,7 +1,16 @@
-.venv/
+/.env
+/.env.*
+!/.env.example
+/.venv/
+/downloads/
+/sync_state.db
+/box_config*.json
+
+# Python cache/build
 __pycache__/
 *.pyc
-.env
-.env.example
-.DS_Store
-*.egg-info/
+build/
+dist/
+
+# IDE
+.idea/
