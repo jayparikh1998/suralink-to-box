@@ -12,6 +12,7 @@ from suralink_to_box.settings import Settings, get_settings
 
 from box_sdk_gen import BoxClient, BoxDeveloperTokenAuth, BoxJWTAuth, JWTConfig
 from box_sdk_gen import UploadFileAttributes, UploadFileAttributesParentField
+from box_sdk_gen.managers.uploads import UploadFileVersionAttributes
 from box_sdk_gen.schemas.folder_full import FolderFull
 
 
@@ -25,6 +26,12 @@ class BoxUploadResult:
 class BoxFolderResult:
     folder_id: str
     folder_name: str
+
+
+@dataclass
+class BoxFileResult:
+    file_id: str
+    file_name: str
 
 
 class _SizedStream(BufferedIOBase):
@@ -183,6 +190,28 @@ def resolve_box_folder_path(
     return current
 
 
+def find_box_file_in_folder(
+    client: BoxClient,
+    *,
+    folder_id: str,
+    file_name: str,
+) -> BoxFileResult | None:
+    """
+    Find a file by name directly under the given Box folder.
+    """
+    items = client.folders.get_folder_items(
+        folder_id=str(folder_id),
+        fields=["id", "name", "type"],
+        limit=1000,
+    )
+
+    for entry in items.entries:
+        if getattr(entry, "type", None) == "file" and getattr(entry, "name", None) == file_name:
+            return BoxFileResult(file_id=str(entry.id), file_name=str(entry.name))
+
+    return None
+
+
 def upload_bytes_to_box(
     client: BoxClient,
     *,
@@ -227,6 +256,35 @@ def upload_stream_to_box(
         upload_stream = io.BytesIO(stream.read())
 
     uploaded = client.uploads.upload_file(
+        attributes=attrs,
+        file=upload_stream,
+        file_content_type=content_type,
+    ).entries[0]
+    return BoxUploadResult(file_id=str(uploaded.id), file_name=str(uploaded.name))
+
+
+def upload_stream_to_box_version(
+    client: BoxClient,
+    *,
+    file_id: str,
+    file_name: str,
+    stream: BufferedIOBase,
+    content_type: str | None = None,
+    content_length: int | None = None,
+) -> BoxUploadResult:
+    """
+    Upload a new version for an existing Box file.
+    """
+    attrs = UploadFileVersionAttributes(name=file_name)
+
+    upload_stream: BufferedIOBase
+    if content_length is not None:
+        upload_stream = _SizedStream(stream, content_length)
+    else:
+        upload_stream = io.BytesIO(stream.read())
+
+    uploaded = client.uploads.upload_file_version(
+        file_id=file_id,
         attributes=attrs,
         file=upload_stream,
         file_content_type=content_type,

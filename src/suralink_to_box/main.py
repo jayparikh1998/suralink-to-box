@@ -3,8 +3,10 @@ from dataclasses import dataclass
 from suralink_to_box.settings import get_settings
 from suralink_to_box.suralink_client import SuralinkClient
 from suralink_to_box.box_client import (
+    find_box_file_in_folder,
     get_box_client,
     upload_stream_to_box,
+    upload_stream_to_box_version,
     ensure_box_subfolder,
     resolve_box_folder_path,
 )
@@ -21,6 +23,7 @@ class SyncOverrides:
     suralink_customer_custom_id: str | None = None
     box_target_folder_id: str | None = None
     box_target_folder_path: str | None = None
+    box_overwrite_existing: bool | None = None
 
 
 @dataclass
@@ -215,6 +218,10 @@ def sync_to_box(
         configured_engagement_id = (getattr(s, "suralink_engagement_id", None) or "").strip()
         configured_customer_custom_id = (getattr(s, "suralink_customer_custom_id", None) or "").strip()
         configured_customer_name = (getattr(s, "suralink_customer_name", None) or "").strip()
+        overwrite_existing = bool(getattr(s, "box_overwrite_existing", False))
+
+        if overwrite_existing:
+            log("Box overwrite mode is enabled: same-name files will be uploaded as new Box versions.")
 
         selected_engagements: list[dict] = []
 
@@ -434,14 +441,38 @@ def sync_to_box(
                         else:
                             log("Size (bytes): unknown")
 
-                        result = upload_stream_to_box(
-                            box_client,
-                            folder_id=folder_id,
-                            file_name=downloaded.filename,
-                            stream=downloaded.stream,
-                            content_type=downloaded.content_type,
-                            content_length=downloaded.content_length,
+                        existing_box_file = (
+                            find_box_file_in_folder(
+                                box_client,
+                                folder_id=folder_id,
+                                file_name=downloaded.filename,
+                            )
+                            if overwrite_existing
+                            else None
                         )
+
+                        if existing_box_file:
+                            log(
+                                "Existing Box file found with the same name. "
+                                f"Uploading a new version to file id={existing_box_file.file_id}."
+                            )
+                            result = upload_stream_to_box_version(
+                                box_client,
+                                file_id=existing_box_file.file_id,
+                                file_name=downloaded.filename,
+                                stream=downloaded.stream,
+                                content_type=downloaded.content_type,
+                                content_length=downloaded.content_length,
+                            )
+                        else:
+                            result = upload_stream_to_box(
+                                box_client,
+                                folder_id=folder_id,
+                                file_name=downloaded.filename,
+                                stream=downloaded.stream,
+                                content_type=downloaded.content_type,
+                                content_length=downloaded.content_length,
+                            )
 
                     log("Upload complete")
                     log(f"Box File Name: {result.file_name}")

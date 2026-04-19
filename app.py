@@ -14,51 +14,34 @@ st.title("Suralink to Box")
 st.caption("Sync Suralink engagement files into Box using the existing project credentials.")
 with st.form("sync_form"):
     st.subheader("Sync Setup")
-    sync_mode = st.radio(
-        "What do you want to sync?",
-        options=("Single engagement", "Customer"),
-        horizontal=True,
-        help="Choose whether to sync one engagement or all engagements for a customer.",
+    customer_name = st.text_input(
+        "Suralink Customer Name",
+        help="Sync all engagements for a customer by name.",
+        placeholder="Example: Acme Corp",
     )
-
-    engagement_id = ""
-    customer_name = ""
-    if sync_mode == "Single engagement":
-        engagement_id = st.text_input(
-            "Suralink Engagement ID",
-            help="Sync one specific engagement by ID.",
-            placeholder="Example: 12345",
-        )
-    else:
-        customer_name = st.text_input(
-            "Suralink Customer Name",
-            help="Sync all engagements for a customer by name.",
-            placeholder="Example: Acme Corp",
-        )
 
     box_target_folder_path = st.text_input(
         "Box Target Folder Path",
         help="Example: Clients/2026 Uploads. Existing folders are reused; missing folders are created.",
         placeholder="Example: Clients/2026 Uploads",
     )
+    box_overwrite_existing = st.checkbox(
+        "Upload new Box versions when the file name already exists",
+        value=False,
+        help="If enabled, a same-name file in the target Box folder will receive a new version instead of being skipped.",
+    )
 
     st.markdown("### Preflight Summary")
-    source_label = (
-        f"Engagement ID `{engagement_id.strip()}`"
-        if sync_mode == "Single engagement" and engagement_id.strip()
-        else f"Customer `{customer_name.strip()}`"
-        if sync_mode == "Customer" and customer_name.strip()
-        else "Not set yet"
-    )
+    source_label = f"Customer `{customer_name.strip()}`" if customer_name.strip() else "Not set yet"
     destination_label = box_target_folder_path.strip() or "Box root folder"
+    overwrite_label = "Enabled" if box_overwrite_existing else "Disabled"
 
-    preflight_col1, preflight_col2 = st.columns(2)
+    preflight_col1, preflight_col2, preflight_col3 = st.columns(3)
     preflight_col1.info(f"Source: {source_label}")
     preflight_col2.info(f"Destination: `{destination_label}`")
+    preflight_col3.info(f"Overwrite Existing: `{overwrite_label}`")
 
-    if sync_mode == "Single engagement" and not engagement_id.strip():
-        st.warning("Enter a Suralink engagement ID to run this sync.")
-    if sync_mode == "Customer" and not customer_name.strip():
+    if not customer_name.strip():
         st.warning("Enter a Suralink customer name to run this sync.")
 
     submitted = st.form_submit_button("Start Sync", use_container_width=True)
@@ -78,9 +61,7 @@ def render_logs() -> None:
 if submitted:
     st.session_state["sync_logs"] = []
 
-    if sync_mode == "Single engagement" and not engagement_id.strip():
-        st.error("Enter a Suralink engagement ID.")
-    elif sync_mode == "Customer" and not customer_name.strip():
+    if not customer_name.strip():
         st.error("Enter a Suralink customer name.")
     else:
         def append_log(message: str) -> None:
@@ -92,9 +73,9 @@ if submitted:
             try:
                 summary = sync_to_box(
                     overrides=SyncOverrides(
-                        suralink_engagement_id=engagement_id.strip() or None,
                         suralink_customer_name=customer_name.strip() or None,
                         box_target_folder_path=box_target_folder_path.strip() or None,
+                        box_overwrite_existing=box_overwrite_existing,
                     ),
                     log=append_log,
                 )

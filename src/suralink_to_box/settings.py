@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     box_jwt_config_path: str | None = None
     box_target_folder_id: str | None = None
     box_as_user_id: str | None = None
+    box_overwrite_existing: bool = False
 
     # App behavior
     log_level: str = "INFO"
