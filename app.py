@@ -25,21 +25,35 @@ with st.form("sync_form"):
         help="Example: Clients/2026 Uploads. Existing folders are reused; missing folders are created.",
         placeholder="Example: Clients/2026 Uploads",
     )
+    suralink_active_engagements_only = st.checkbox(
+        "Only sync active engagements",
+        value=False,
+        help="If enabled, inactive engagements for the customer will be filtered out before files are processed.",
+    )
     box_overwrite_existing = st.checkbox(
         "Upload new Box versions when the file name already exists",
         value=False,
         help="If enabled, a same-name file in the target Box folder will receive a new version instead of being skipped.",
     )
+    suralink_approved_only = st.checkbox(
+        "Only sync approved Suralink files",
+        value=False,
+        help="If enabled, only files whose Suralink request state is green or approved will be synced.",
+    )
 
     st.markdown("### Preflight Summary")
     source_label = f"Customer `{customer_name.strip()}`" if customer_name.strip() else "Not set yet"
     destination_label = box_target_folder_path.strip() or "Box root folder"
+    engagement_label = "Active only" if suralink_active_engagements_only else "All engagements"
     overwrite_label = "Enabled" if box_overwrite_existing else "Disabled"
+    approved_label = "Approved only" if suralink_approved_only else "All statuses"
 
-    preflight_col1, preflight_col2, preflight_col3 = st.columns(3)
+    preflight_col1, preflight_col2, preflight_col3, preflight_col4, preflight_col5 = st.columns(5)
     preflight_col1.info(f"Source: {source_label}")
     preflight_col2.info(f"Destination: `{destination_label}`")
-    preflight_col3.info(f"Overwrite Existing: `{overwrite_label}`")
+    preflight_col3.info(f"Engagement Filter: `{engagement_label}`")
+    preflight_col4.info(f"Overwrite Existing: `{overwrite_label}`")
+    preflight_col5.info(f"Status Filter: `{approved_label}`")
 
     if not customer_name.strip():
         st.warning("Enter a Suralink customer name to run this sync.")
@@ -74,8 +88,10 @@ if submitted:
                 summary = sync_to_box(
                     overrides=SyncOverrides(
                         suralink_customer_name=customer_name.strip() or None,
+                        suralink_active_engagements_only=suralink_active_engagements_only,
                         box_target_folder_path=box_target_folder_path.strip() or None,
                         box_overwrite_existing=box_overwrite_existing,
+                        suralink_approved_only=suralink_approved_only,
                     ),
                     log=append_log,
                 )

@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     suralink_engagement_id: str | None = None
     suralink_customer_name: str | None = None
     suralink_customer_custom_id: str | None = None
+    suralink_active_engagements_only: bool = False
 
     # Box
     box_client_id: str | None = None
@@ -26,6 +27,7 @@ class Settings(BaseSettings):
     box_target_folder_id: str | None = None
     box_as_user_id: str | None = None
     box_overwrite_existing: bool = False
+    suralink_approved_only: bool = False
 
     # App behavior
     log_level: str = "INFO"

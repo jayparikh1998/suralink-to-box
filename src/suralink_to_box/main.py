@@ -21,9 +21,11 @@ class SyncOverrides:
     suralink_engagement_id: str | None = None
     suralink_customer_name: str | None = None
     suralink_customer_custom_id: str | None = None
+    suralink_active_engagements_only: bool | None = None
     box_target_folder_id: str | None = None
     box_target_folder_path: str | None = None
     box_overwrite_existing: bool | None = None
+    suralink_approved_only: bool | None = None
 
 
 @dataclass
@@ -190,6 +192,197 @@ def _fetch_all_files(client: SuralinkClient, engagement_id: str) -> list[dict]:
     return all_files
 
 
+def _normalize_status_text(value: object) -> str:
+    return str(value).strip().lower()
+
+
+def _extract_engagement_activity_values(engagement: dict | None) -> list[str]:
+    if not isinstance(engagement, dict):
+        return []
+
+    values: list[str] = []
+    seen: set[str] = set()
+    relevant_tokens = ("active", "inactive", "archiv", "closed", "open", "status", "state")
+    nested_value_keys = {"id", "name", "title", "label", "value", "code", "status", "state"}
+
+    def add(raw: object) -> None:
+        normalized = _normalize_status_text(raw)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            values.append(normalized)
+
+    for key, value in engagement.items():
+        lowered_key = key.lower()
+        if not any(token in lowered_key for token in relevant_tokens):
+            continue
+
+        if isinstance(value, dict):
+            for nested_key in nested_value_keys:
+                if nested_key in value:
+                    add(value[nested_key])
+        elif isinstance(value, list):
+            for item in value:
+                add(item)
+        else:
+            add(value)
+
+    return values
+
+
+def _is_active_engagement(engagement: dict) -> tuple[bool, list[str]]:
+    raw_state = engagement.get("state")
+    raw_status = engagement.get("status")
+
+    for raw_value in (raw_state, raw_status):
+        if isinstance(raw_value, bool):
+            continue
+        if isinstance(raw_value, int):
+            # Observed from the Suralink engagement payload:
+            # 1 = active, 2 = inactive, and archived/non-active states are
+            # expected to be other non-1 values such as 3.
+            if raw_value == 1:
+                return True, [str(raw_value)]
+            return False, [str(raw_value)]
+        if isinstance(raw_value, str) and raw_value.strip().isdigit():
+            numeric_value = int(raw_value.strip())
+            if numeric_value == 1:
+                return True, [str(numeric_value)]
+            return False, [str(numeric_value)]
+
+    observed_values = _extract_engagement_activity_values(engagement)
+    active_markers = ("active", "open", "current", "true", "yes", "1")
+    inactive_markers = ("inactive", "archived", "closed", "complete", "completed", "false", "no", "0", "2", "3")
+
+    if any(any(marker in value for marker in inactive_markers) for value in observed_values):
+        return False, observed_values
+    if any(any(marker in value for marker in active_markers) for value in observed_values):
+        return True, observed_values
+
+    # Default open if nothing explicit is found, but preserve observed values for logging.
+    return True, observed_values
+
+
+def _engagement_activity_debug_snapshot(engagement: dict | None) -> dict[str, object]:
+    if not isinstance(engagement, dict):
+        return {}
+
+    snapshot: dict[str, object] = {}
+    for key, value in engagement.items():
+        lowered_key = key.lower()
+        if any(token in lowered_key for token in ("active", "inactive", "archiv", "closed", "open", "status", "state")):
+            snapshot[key] = value
+    return snapshot
+
+
+def _extract_status_values(payload: dict | None) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+
+    direct_keys = {
+        "state",
+        "status",
+        "color",
+        "statusColor",
+        "approvalStatus",
+        "approvalState",
+        "requestState",
+        "requestStatus",
+        "reviewStatus",
+        "isApproved",
+        "isComplete",
+        "isCompleted",
+        "isReceived",
+        "isFulfilled",
+    }
+    nested_value_keys = {"id", "name", "title", "label", "value", "code", "color"}
+
+    values: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: object) -> None:
+        normalized = _normalize_status_text(raw)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            values.append(normalized)
+
+    for key, value in payload.items():
+        lowered_key = key.lower()
+        key_looks_relevant = (
+            key in direct_keys
+            or any(
+                token in lowered_key
+                for token in (
+                    "status",
+                    "state",
+                    "approval",
+                    "color",
+                    "complete",
+                    "received",
+                    "fulfilled",
+                )
+            )
+        )
+
+        if key_looks_relevant:
+            if isinstance(value, dict):
+                for nested_key in nested_value_keys:
+                    if nested_key in value:
+                        add(value[nested_key])
+            elif isinstance(value, list):
+                for item in value:
+                    add(item)
+            else:
+                add(value)
+
+    return values
+
+
+def _is_approved_request(*, request_obj: dict | None, file_obj: dict | None) -> tuple[bool, list[str]]:
+    raw_request_state = request_obj.get("state") if isinstance(request_obj, dict) else None
+    if isinstance(raw_request_state, bool):
+        raw_request_state = None
+
+    if isinstance(raw_request_state, int):
+        # Observed from the live Suralink request-item payload for the UI shown:
+        # 1 = default/pending, 2 = flagged, 3 = green check, 4 = red X.
+        return raw_request_state == 3, [str(raw_request_state)]
+
+    if isinstance(raw_request_state, str) and raw_request_state.strip().isdigit():
+        numeric_state = int(raw_request_state.strip())
+        return numeric_state == 3, [str(numeric_state)]
+
+    observed_values = _extract_status_values(request_obj) + [
+        value for value in _extract_status_values(file_obj)
+        if value not in _extract_status_values(request_obj)
+    ]
+    approved_markers = (
+        "green",
+        "approved",
+        "complete",
+        "completed",
+    )
+    is_approved = any(
+        any(marker in value for marker in approved_markers)
+        for value in observed_values
+    )
+    return is_approved, observed_values
+
+
+def _status_debug_snapshot(payload: dict | None) -> dict[str, object]:
+    if not isinstance(payload, dict):
+        return {}
+
+    snapshot: dict[str, object] = {}
+    for key, value in payload.items():
+        lowered_key = key.lower()
+        if any(
+            token in lowered_key
+            for token in ("status", "state", "approval", "color", "complete", "received", "fulfilled")
+        ):
+            snapshot[key] = value
+    return snapshot
+
+
 def _settings_with_overrides(overrides: SyncOverrides | None):
     settings = get_settings()
     if not overrides:
@@ -218,10 +411,16 @@ def sync_to_box(
         configured_engagement_id = (getattr(s, "suralink_engagement_id", None) or "").strip()
         configured_customer_custom_id = (getattr(s, "suralink_customer_custom_id", None) or "").strip()
         configured_customer_name = (getattr(s, "suralink_customer_name", None) or "").strip()
+        active_engagements_only = bool(getattr(s, "suralink_active_engagements_only", False))
         overwrite_existing = bool(getattr(s, "box_overwrite_existing", False))
+        approved_only = bool(getattr(s, "suralink_approved_only", False))
 
+        if active_engagements_only:
+            log("Active-engagement-only mode is enabled: inactive engagements will be filtered out before sync.")
         if overwrite_existing:
             log("Box overwrite mode is enabled: same-name files will be uploaded as new Box versions.")
+        if approved_only:
+            log("Approved-only mode is enabled: only Suralink files with a green/approved request state will sync.")
 
         selected_engagements: list[dict] = []
 
@@ -316,6 +515,42 @@ def sync_to_box(
 
         if not selected_engagements:
             log("No matching engagements found.")
+            return SyncSummary(
+                engagements_selected=0,
+                engagements_with_files=0,
+                total_files_found=0,
+                uploaded_successfully=0,
+                skipped_existing_box=0,
+                skipped_tracked=0,
+                failed=0,
+            )
+
+        if active_engagements_only:
+            filtered_engagements: list[dict] = []
+            for engagement in selected_engagements:
+                is_active, observed_values = _is_active_engagement(engagement)
+                if is_active:
+                    filtered_engagements.append(engagement)
+                    continue
+
+                engagement_name = _pick_name(engagement)
+                observed_text = ", ".join(observed_values) if observed_values else "none found"
+                log(
+                    f"Skipping inactive engagement: {engagement_name}. "
+                    f"Observed activity values: {observed_text}"
+                )
+                debug_fields = _engagement_activity_debug_snapshot(engagement)
+                if debug_fields:
+                    log(f"Engagement activity fields: {debug_fields}")
+
+            log(
+                f"Active engagement filter kept {len(filtered_engagements)} of "
+                f"{len(selected_engagements)} engagement(s)."
+            )
+            selected_engagements = filtered_engagements
+
+        if not selected_engagements:
+            log("No active engagements matched the current filter.")
             return SyncSummary(
                 engagements_selected=0,
                 engagements_with_files=0,
@@ -422,6 +657,25 @@ def sync_to_box(
                     f"State: {request_state} | File ID: {file_id}"
                 )
 
+                if approved_only:
+                    is_approved, observed_status_values = _is_approved_request(
+                        request_obj=req,
+                        file_obj=file_obj,
+                    )
+                    if not is_approved:
+                        observed_text = ", ".join(observed_status_values) if observed_status_values else "none found"
+                        log(
+                            "Skipped -> file is not marked approved/green by the current detector. "
+                            f"Observed status values: {observed_text}"
+                        )
+                        request_debug = _status_debug_snapshot(req)
+                        file_debug = _status_debug_snapshot(file_obj)
+                        if request_debug:
+                            log(f"Request status fields: {request_debug}")
+                        if file_debug:
+                            log(f"File status fields: {file_debug}")
+                        continue
+
                 if tracker.is_synced(suralink_file_id=file_id, engagement_id=engagement_id):
                     skipped_tracked_count += 1
                     log("Skipped -> already tracked as synced")
@@ -495,14 +749,19 @@ def sync_to_box(
                         skipped_existing_box_count += 1
                         log("Skipped -> file already exists in Box")
                         log(f"Existing file name: {file_name}")
-
-                        tracker.mark_synced(
-                            suralink_file_id=file_id,
-                            engagement_id=engagement_id,
-                            request_id=request_id,
+                        existing_box_file = find_box_file_in_folder(
+                            box_client,
+                            folder_id=folder_id,
                             file_name=file_name,
-                            box_file_id="",
-                            box_folder_id=folder_id,
+                        )
+                        if existing_box_file:
+                            log(
+                                "Box confirms an existing file in the target folder: "
+                                f"id={existing_box_file.file_id}, name={existing_box_file.file_name}"
+                            )
+                        log(
+                            "Not marking this file as synced locally because the upload did not complete. "
+                            "You can rerun after cleaning the Box target or enable overwrite."
                         )
                     else:
                         failed_count += 1
