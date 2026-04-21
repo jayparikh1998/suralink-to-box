@@ -5,6 +5,11 @@ import streamlit as st
 from suralink_to_box.main import SyncOverrides, sync_to_box
 from suralink_to_box.settings import get_settings
 
+STRUCTURE_OPTIONS = {
+    "Categories / Requests": "categories_requests",
+    "Categories": "categories",
+    "Just Files": "just_files",
+}
 
 st.set_page_config(
     page_title="Suralink to Box",
@@ -40,6 +45,19 @@ with st.form("sync_form"):
         value=settings.box_overwrite_existing,
         help="If enabled, a same-name file in the target Box folder will receive a new version instead of being skipped.",
     )
+    configured_structure_mode = str(getattr(settings, "box_structure_mode", "just_files") or "just_files")
+    structure_option_labels = list(STRUCTURE_OPTIONS.keys())
+    structure_option_values = list(STRUCTURE_OPTIONS.values())
+    try:
+        structure_index = structure_option_values.index(configured_structure_mode)
+    except ValueError:
+        structure_index = structure_option_values.index("just_files")
+    box_structure_label = st.selectbox(
+        "Box Folder Structure",
+        options=structure_option_labels,
+        index=structure_index,
+        help="Choose how files should be organized inside each engagement folder in Box.",
+    )
     suralink_approved_only = st.checkbox(
         "Only sync approved Suralink files",
         value=settings.suralink_approved_only,
@@ -51,14 +69,16 @@ with st.form("sync_form"):
     destination_label = box_target_folder_path.strip() or "Box root folder"
     engagement_label = "Active only" if suralink_active_engagements_only else "All engagements"
     overwrite_label = "Enabled" if box_overwrite_existing else "Disabled"
+    structure_label = box_structure_label
     approved_label = "Approved only" if suralink_approved_only else "All statuses"
 
-    preflight_col1, preflight_col2, preflight_col3, preflight_col4, preflight_col5 = st.columns(5)
+    preflight_col1, preflight_col2, preflight_col3, preflight_col4, preflight_col5, preflight_col6 = st.columns(6)
     preflight_col1.info(f"Source: {source_label}")
     preflight_col2.info(f"Destination: `{destination_label}`")
     preflight_col3.info(f"Engagement Filter: `{engagement_label}`")
     preflight_col4.info(f"Overwrite Existing: `{overwrite_label}`")
-    preflight_col5.info(f"Status Filter: `{approved_label}`")
+    preflight_col5.info(f"Structure: `{structure_label}`")
+    preflight_col6.info(f"Status Filter: `{approved_label}`")
 
     if not customer_name.strip():
         st.warning("Enter a Suralink customer name to run this sync.")
@@ -96,6 +116,7 @@ if submitted:
                         suralink_active_engagements_only=suralink_active_engagements_only,
                         box_target_folder_path=box_target_folder_path.strip() or None,
                         box_overwrite_existing=box_overwrite_existing,
+                        box_structure_mode=STRUCTURE_OPTIONS[box_structure_label],
                         suralink_approved_only=suralink_approved_only,
                     ),
                     log=append_log,

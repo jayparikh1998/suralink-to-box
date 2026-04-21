@@ -14,6 +14,9 @@ from suralink_to_box.sync_tracker import SyncTracker
 
 
 PAGE_SIZE = 50
+STRUCTURE_CATEGORIES_REQUESTS = "categories_requests"
+STRUCTURE_CATEGORIES = "categories"
+STRUCTURE_JUST_FILES = "just_files"
 
 
 @dataclass
@@ -25,6 +28,7 @@ class SyncOverrides:
     box_target_folder_id: str | None = None
     box_target_folder_path: str | None = None
     box_overwrite_existing: bool | None = None
+    box_structure_mode: str | None = None
     suralink_approved_only: bool | None = None
 
 
@@ -82,6 +86,46 @@ def _pick_name(obj: dict | None) -> str:
         or obj.get("title")
         or "(unnamed)"
     )
+
+
+def _normalize_structure_mode(raw_value: str | None) -> str:
+    value = (raw_value or "").strip().lower()
+    if value in {
+        STRUCTURE_CATEGORIES_REQUESTS,
+        STRUCTURE_CATEGORIES,
+        STRUCTURE_JUST_FILES,
+    }:
+        return value
+    return STRUCTURE_JUST_FILES
+
+
+def _structure_mode_label(mode: str) -> str:
+    labels = {
+        STRUCTURE_CATEGORIES_REQUESTS: "Categories / Requests",
+        STRUCTURE_CATEGORIES: "Categories",
+        STRUCTURE_JUST_FILES: "Just Files",
+    }
+    return labels.get(mode, "Just Files")
+
+
+def _box_safe_folder_name(raw_name: str | None, *, fallback: str) -> str:
+    value = str(raw_name or "").strip()
+    if not value:
+        return fallback
+
+    sanitized = (
+        value.replace("\\", " - ")
+        .replace("/", " - ")
+        .replace(":", " - ")
+        .replace("*", "")
+        .replace("?", "")
+        .replace('"', "'")
+        .replace("<", "(")
+        .replace(">", ")")
+        .replace("|", "-")
+    )
+    sanitized = " ".join(sanitized.split()).strip(" .")
+    return sanitized or fallback
 
 
 def _pick_customer_name(obj: dict | None) -> str | None:
@@ -145,13 +189,46 @@ def _pick_client_id(client_obj: dict | None) -> str | None:
 def _resolve_client_folder_name(engagement: dict, configured_customer_name: str) -> str:
     detected = (_pick_customer_name(engagement) or "").strip()
     if detected:
-        return f"Suralink - {detected}"
+        return _box_safe_folder_name(
+            f"Suralink - {detected}",
+            fallback="Suralink - unknown_client",
+        )
 
     configured = configured_customer_name.strip()
     if configured:
-        return f"Suralink - {configured}"
+        return _box_safe_folder_name(
+            f"Suralink - {configured}",
+            fallback="Suralink - unknown_client",
+        )
 
     return "Suralink - unknown_client"
+
+
+def _resolve_category_folder_name(request_obj: dict | None) -> str:
+    if not isinstance(request_obj, dict):
+        return "Unknown Category"
+    return _box_safe_folder_name(
+        request_obj.get("categoryName"),
+        fallback="Unknown Category",
+    )
+
+
+def _resolve_request_folder_name(request_obj: dict | None, request_id: str) -> str:
+    if not isinstance(request_obj, dict):
+        return f"Request {request_id}"
+
+    request_number = request_obj.get("requestNumber")
+    request_name = _pick_name(request_obj)
+    if request_number not in (None, ""):
+        return _box_safe_folder_name(
+            f"{request_number} {request_name}",
+            fallback=f"Request {request_id}",
+        )
+
+    return _box_safe_folder_name(
+        request_name,
+        fallback=f"Request {request_id}",
+    )
 
 
 def _fetch_all_requests(client: SuralinkClient, engagement_id: str) -> list[dict]:
@@ -413,12 +490,14 @@ def sync_to_box(
         configured_customer_name = (getattr(s, "suralink_customer_name", None) or "").strip()
         active_engagements_only = bool(getattr(s, "suralink_active_engagements_only", False))
         overwrite_existing = bool(getattr(s, "box_overwrite_existing", False))
+        structure_mode = _normalize_structure_mode(getattr(s, "box_structure_mode", None))
         approved_only = bool(getattr(s, "suralink_approved_only", False))
 
         if active_engagements_only:
             log("Active-engagement-only mode is enabled: inactive engagements will be filtered out before sync.")
         if overwrite_existing:
             log("Box overwrite mode is enabled: same-name files will be uploaded as new Box versions.")
+        log(f"Box structure mode: {_structure_mode_label(structure_mode)}")
         if approved_only:
             log("Approved-only mode is enabled: only Suralink files with a green/approved request state will sync.")
 
@@ -610,7 +689,10 @@ def sync_to_box(
 
         for engagement in selected_engagements:
             engagement_id = _pick_id(engagement, ["id"])
-            engagement_name = _pick_name(engagement)
+            engagement_name = _box_safe_folder_name(
+                _pick_name(engagement),
+                fallback=f"engagement_{engagement_id or 'unknown'}",
+            )
             client_name = _resolve_client_folder_name(engagement, configured_customer_name)
             if not engagement_id:
                 continue
@@ -647,26 +729,13 @@ def sync_to_box(
                 if destination_root
                 else root_folder_id
             )
-
-            client_folder = ensure_box_subfolder(
-                box_client,
-                parent_folder_id=client_parent_folder_id,
-                folder_name=client_name,
-            )
-            engagement_folder = ensure_box_subfolder(
-                box_client,
-                parent_folder_id=client_folder.folder_id,
-                folder_name=engagement_name,
-            )
-            folder_id = engagement_folder.folder_id
-            path_parts = []
+            client_folder: tuple[str, str] | None = None
+            engagement_folder: tuple[str, str] | None = None
+            base_path_parts = []
             if root_folder_path:
-                path_parts.append(root_folder_path.strip("/"))
-            path_parts.append(client_folder.folder_name)
-            path_parts.append(engagement_folder.folder_name)
-            log(
-                f"Using Box folder path: {' / '.join(path_parts)} (id={folder_id})"
-            )
+                base_path_parts.append(root_folder_path.strip("/"))
+            category_folder_cache: dict[str, tuple[str, str]] = {}
+            request_folder_cache: dict[str, tuple[str, str]] = {}
 
             log(f"Found {len(files)} file(s) in engagement.")
 
@@ -709,6 +778,74 @@ def sync_to_box(
                     log("Skipped -> already tracked as synced")
                     continue
 
+                if client_folder is None:
+                    created_client_folder = ensure_box_subfolder(
+                        box_client,
+                        parent_folder_id=client_parent_folder_id,
+                        folder_name=client_name,
+                    )
+                    client_folder = (
+                        created_client_folder.folder_id,
+                        created_client_folder.folder_name,
+                    )
+
+                if engagement_folder is None:
+                    created_engagement_folder = ensure_box_subfolder(
+                        box_client,
+                        parent_folder_id=client_folder[0],
+                        folder_name=engagement_name,
+                    )
+                    engagement_folder = (
+                        created_engagement_folder.folder_id,
+                        created_engagement_folder.folder_name,
+                    )
+                    log(
+                        "Using Box folder path: "
+                        f"{' / '.join([*base_path_parts, client_folder[1], engagement_folder[1]])} "
+                        f"(id={engagement_folder[0]})"
+                    )
+
+                target_folder_id = engagement_folder[0]
+                target_path_parts = [*base_path_parts, client_folder[1], engagement_folder[1]]
+                if structure_mode in {STRUCTURE_CATEGORIES_REQUESTS, STRUCTURE_CATEGORIES}:
+                    category_folder_name = _resolve_category_folder_name(req)
+                    category_folder = category_folder_cache.get(category_folder_name)
+                    if category_folder is None:
+                        created_category_folder = ensure_box_subfolder(
+                            box_client,
+                            parent_folder_id=engagement_folder[0],
+                            folder_name=category_folder_name,
+                        )
+                        category_folder = (
+                            created_category_folder.folder_id,
+                            created_category_folder.folder_name,
+                        )
+                        category_folder_cache[category_folder_name] = category_folder
+
+                    target_folder_id = category_folder[0]
+                    target_path_parts = [*target_path_parts, category_folder[1]]
+
+                    if structure_mode == STRUCTURE_CATEGORIES_REQUESTS:
+                        request_folder_name = _resolve_request_folder_name(req, request_id)
+                        request_cache_key = f"{category_folder_name}::{request_folder_name}"
+                        request_folder = request_folder_cache.get(request_cache_key)
+                        if request_folder is None:
+                            created_request_folder = ensure_box_subfolder(
+                                box_client,
+                                parent_folder_id=category_folder[0],
+                                folder_name=request_folder_name,
+                            )
+                            request_folder = (
+                                created_request_folder.folder_id,
+                                created_request_folder.folder_name,
+                            )
+                            request_folder_cache[request_cache_key] = request_folder
+
+                        target_folder_id = request_folder[0]
+                        target_path_parts = [*target_path_parts, request_folder[1]]
+
+                log(f"Target Box folder: {' / '.join(target_path_parts)} (id={target_folder_id})")
+
                 try:
                     with client.stream_engagement_file(
                         audit_id=engagement_id,
@@ -726,7 +863,7 @@ def sync_to_box(
                         existing_box_file = (
                             find_box_file_in_folder(
                                 box_client,
-                                folder_id=folder_id,
+                                folder_id=target_folder_id,
                                 file_name=downloaded.filename,
                             )
                             if overwrite_existing
@@ -749,7 +886,7 @@ def sync_to_box(
                         else:
                             result = upload_stream_to_box(
                                 box_client,
-                                folder_id=folder_id,
+                                folder_id=target_folder_id,
                                 file_name=downloaded.filename,
                                 stream=downloaded.stream,
                                 content_type=downloaded.content_type,
@@ -766,7 +903,7 @@ def sync_to_box(
                         request_id=request_id,
                         file_name=downloaded.filename,
                         box_file_id=result.file_id,
-                        box_folder_id=folder_id,
+                        box_folder_id=target_folder_id,
                     )
 
                     uploaded_count += 1
@@ -779,7 +916,7 @@ def sync_to_box(
                         log(f"Existing file name: {file_name}")
                         existing_box_file = find_box_file_in_folder(
                             box_client,
-                            folder_id=folder_id,
+                            folder_id=target_folder_id,
                             file_name=file_name,
                         )
                         if existing_box_file:
