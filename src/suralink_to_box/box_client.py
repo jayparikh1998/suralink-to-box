@@ -69,8 +69,29 @@ def _normalize_box_private_key(private_key: str) -> str:
     )
 
 
+def _resolve_jwt_config_path(config_path: str) -> Path:
+    path = Path(config_path).expanduser()
+    if path.is_absolute():
+        return path
+
+    candidates = [
+        Path.cwd() / path,
+        Path(__file__).resolve().parents[2] / path,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return candidates[0]
+
+
 def _load_jwt_config(config_path: str) -> JWTConfig:
-    path = Path(config_path)
+    path = _resolve_jwt_config_path(config_path)
+    if not path.exists():
+        raise ValueError(
+            "BOX_JWT_CONFIG_PATH does not point to an existing file. "
+            f"Resolved path: {path}"
+        )
     config_payload = json.loads(path.read_text(encoding="utf-8"))
 
     app_auth = (
@@ -79,11 +100,11 @@ def _load_jwt_config(config_path: str) -> JWTConfig:
     )
     private_key = app_auth.get("privateKey")
     if not isinstance(private_key, str):
-        return JWTConfig.from_config_file(config_file_path=config_path)
+        return JWTConfig.from_config_file(config_file_path=str(path))
 
     normalized_key = _normalize_box_private_key(private_key)
     if normalized_key == private_key:
-        return JWTConfig.from_config_file(config_file_path=config_path)
+        return JWTConfig.from_config_file(config_file_path=str(path))
 
     app_auth["privateKey"] = normalized_key
     temp_path: str | None = None

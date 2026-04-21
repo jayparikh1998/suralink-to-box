@@ -5,7 +5,7 @@
 /downloads/
 /sync_state.db
 /box_config*.json
-
+/JWT_config.json
 # Python cache/build
 __pycache__/
 *.pyc
