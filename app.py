@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from suralink_to_box.box_client import get_box_client, list_box_folder_path_options
 from suralink_to_box.main import SyncOverrides, sync_to_box
 from suralink_to_box.settings import get_settings
 
@@ -17,9 +18,68 @@ st.set_page_config(
 )
 
 settings = get_settings()
+configured_base_box_path = (settings.box_target_folder_path or "").strip()
+configured_root_folder_id = (settings.box_target_folder_id or "0").strip() or "0"
+
+
+def load_box_folder_picker_options() -> tuple[str, list[tuple[str, str]]]:
+    client = get_box_client(settings=settings)
+    base_folder, folder_options = list_box_folder_path_options(
+        client,
+        root_folder_id=configured_root_folder_id,
+        folder_path=configured_base_box_path,
+    )
+
+    picker_options: list[tuple[str, str]] = []
+    base_label = configured_base_box_path or "Box root"
+    picker_options.append((f"(Base root) {base_label}", configured_base_box_path))
+
+    for option in folder_options[1:]:
+        full_path = (
+            f"{configured_base_box_path} / {option.relative_path}"
+            if configured_base_box_path
+            else option.relative_path
+        )
+        picker_options.append((option.relative_path, full_path))
+
+    cache_key = f"{configured_root_folder_id}|{configured_base_box_path}|{base_folder.folder_id}"
+    return cache_key, picker_options
+
+
+current_picker_cache_key = st.session_state.get("box_folder_picker_cache_key")
+expected_picker_prefix = f"{configured_root_folder_id}|{configured_base_box_path}|"
+refresh_folders = st.button("Refresh Box Folder List")
+if refresh_folders:
+    st.session_state.pop("box_folder_picker_cache_key", None)
+    st.session_state.pop("box_folder_picker_options", None)
+    st.session_state.pop("box_folder_picker_error", None)
+
+if (
+    "box_folder_picker_options" not in st.session_state
+    or current_picker_cache_key is None
+    or not str(current_picker_cache_key).startswith(expected_picker_prefix)
+):
+    try:
+        picker_cache_key, picker_options = load_box_folder_picker_options()
+    except Exception as exc:
+        st.session_state["box_folder_picker_error"] = f"{type(exc).__name__}: {exc}"
+        st.session_state["box_folder_picker_options"] = []
+        st.session_state["box_folder_picker_cache_key"] = None
+    else:
+        st.session_state["box_folder_picker_error"] = None
+        st.session_state["box_folder_picker_options"] = picker_options
+        st.session_state["box_folder_picker_cache_key"] = picker_cache_key
+
+box_folder_picker_error = st.session_state.get("box_folder_picker_error")
+box_folder_picker_options: list[tuple[str, str]] = st.session_state.get("box_folder_picker_options", [])
 
 st.title("Suralink to Box")
 st.caption("Sync Suralink engagement files into Box using the existing project credentials.")
+st.caption(
+    "Base Box root: "
+    f"`{configured_base_box_path or 'Box root'}`. "
+    "Choose an existing folder under this base root to avoid typos and accidental folder creation."
+)
 with st.form("sync_form"):
     st.subheader("Sync Setup")
     customer_name = st.text_input(
@@ -29,12 +89,38 @@ with st.form("sync_form"):
         value=(settings.suralink_customer_name or ""),
     )
 
-    box_target_folder_path = st.text_input(
-        "Box Target Folder Path",
-        help="Example: Clients/2026 Uploads. Existing folders are reused; missing folders are created.",
-        placeholder="Example: Clients/2026 Uploads",
-        value=(settings.box_target_folder_path or ""),
-    )
+    if box_folder_picker_options:
+        folder_option_labels = [label for label, _ in box_folder_picker_options]
+        box_target_folder_label = st.selectbox(
+            "Select Existing Box Folder",
+            options=folder_option_labels,
+            index=0,
+            help="Choose an existing Box folder under the configured base root.",
+        )
+        selected_existing_folder_path = dict(box_folder_picker_options)[box_target_folder_label]
+        new_folder_name = st.text_input(
+            "Make New Folder",
+            value="",
+            help="Optionally create a new folder under the selected existing Box folder.",
+            placeholder="Example: Jay",
+        ).strip()
+        box_target_folder_path = (
+            f"{selected_existing_folder_path} / {new_folder_name}"
+            if new_folder_name
+            else selected_existing_folder_path
+        )
+    else:
+        st.warning(
+            "Could not load the Box folder list, so manual path entry is temporarily enabled."
+        )
+        if box_folder_picker_error:
+            st.caption(f"Folder list error: {box_folder_picker_error}")
+        box_target_folder_path = st.text_input(
+            "Make New Folder",
+            help="Enter a new folder name or path under the configured base root when you want the app to create it.",
+            placeholder="Example: Jay",
+            value="",
+        )
     suralink_active_engagements_only = st.checkbox(
         "Only sync active engagements",
         value=settings.suralink_active_engagements_only,

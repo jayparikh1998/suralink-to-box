@@ -34,6 +34,12 @@ class BoxFileResult:
     file_name: str
 
 
+@dataclass
+class BoxFolderPathOption:
+    folder_id: str
+    relative_path: str
+
+
 class _SizedStream(BufferedIOBase):
     def __init__(self, base_stream: BufferedIOBase, content_length: int):
         self._base_stream = base_stream
@@ -231,6 +237,48 @@ def find_box_file_in_folder(
             return BoxFileResult(file_id=str(entry.id), file_name=str(entry.name))
 
     return None
+
+
+def list_box_folder_path_options(
+    client: BoxClient,
+    *,
+    root_folder_id: str,
+    folder_path: str,
+) -> tuple[BoxFolderResult, list[BoxFolderPathOption]]:
+    """
+    Resolve the configured base folder and list the immediate child folders
+    beneath it. The empty relative path represents the base folder itself.
+    """
+    base_folder = (
+        resolve_box_folder_path(
+            client,
+            root_folder_id=root_folder_id,
+            folder_path=folder_path,
+        )
+        if folder_path.strip()
+        else BoxFolderResult(folder_id=str(root_folder_id), folder_name="")
+    )
+
+    items = client.folders.get_folder_items(
+        folder_id=str(base_folder.folder_id),
+        fields=["id", "name", "type"],
+        limit=1000,
+    )
+    child_options = sorted(
+        [
+            BoxFolderPathOption(
+                folder_id=str(entry.id),
+                relative_path=str(entry.name),
+            )
+            for entry in items.entries
+            if getattr(entry, "type", None) == "folder"
+        ],
+        key=lambda option: option.relative_path.lower(),
+    )
+    return base_folder, [
+        BoxFolderPathOption(folder_id=base_folder.folder_id, relative_path=""),
+        *child_options,
+    ]
 
 
 def upload_bytes_to_box(
