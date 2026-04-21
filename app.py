@@ -99,10 +99,10 @@ with st.form("sync_form"):
         )
         selected_existing_folder_path = dict(box_folder_picker_options)[box_target_folder_label]
         new_folder_name = st.text_input(
-            "Make New Folder",
+            "Existing or New Subfolder Path",
             value="",
-            help="Optionally create a new folder under the selected existing Box folder.",
-            placeholder="Example: Jay",
+            help="Optionally enter a subfolder path under the selected Box folder. Existing paths are reused; missing paths are created.",
+            placeholder="Example: Jay or Jay / Test",
         ).strip()
         box_target_folder_path = (
             f"{selected_existing_folder_path} / {new_folder_name}"
@@ -116,9 +116,9 @@ with st.form("sync_form"):
         if box_folder_picker_error:
             st.caption(f"Folder list error: {box_folder_picker_error}")
         box_target_folder_path = st.text_input(
-            "Make New Folder",
-            help="Enter a new folder name or path under the configured base root when you want the app to create it.",
-            placeholder="Example: Jay",
+            "Existing or New Subfolder Path",
+            help="Enter a subfolder path under the configured base root. Existing paths are reused; missing paths are created.",
+            placeholder="Example: Jay or Jay / Test",
             value="",
         )
     suralink_active_engagements_only = st.checkbox(
