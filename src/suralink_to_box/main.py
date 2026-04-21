@@ -697,7 +697,15 @@ def sync_to_box(
             if not engagement_id:
                 continue
 
+            engagement_is_active, engagement_activity_values = _is_active_engagement(engagement)
+
             log(f"\nProcessing engagement: {engagement_name} (id={engagement_id})")
+            if approved_only and not active_engagements_only and not engagement_is_active:
+                observed_text = ", ".join(engagement_activity_values) if engagement_activity_values else "none found"
+                log(
+                    "Approved-only filter is bypassed for this inactive engagement. "
+                    f"Observed activity values: {observed_text}"
+                )
 
             try:
                 files = _fetch_all_files(client, engagement_id)
@@ -754,7 +762,7 @@ def sync_to_box(
                     f"State: {request_state} | File ID: {file_id}"
                 )
 
-                if approved_only:
+                if approved_only and engagement_is_active:
                     is_approved, observed_status_values = _is_approved_request(
                         request_obj=req,
                         file_obj=file_obj,
