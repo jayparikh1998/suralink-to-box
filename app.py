@@ -3,12 +3,15 @@ from __future__ import annotations
 import streamlit as st
 
 from suralink_to_box.main import SyncOverrides, sync_to_box
+from suralink_to_box.settings import get_settings
 
 
 st.set_page_config(
     page_title="Suralink to Box",
     layout="wide",
 )
+
+settings = get_settings()
 
 st.title("Suralink to Box")
 st.caption("Sync Suralink engagement files into Box using the existing project credentials.")
@@ -18,26 +21,28 @@ with st.form("sync_form"):
         "Suralink Customer Name",
         help="Sync all engagements for a customer by name.",
         placeholder="Example: Acme Corp",
+        value=(settings.suralink_customer_name or ""),
     )
 
     box_target_folder_path = st.text_input(
         "Box Target Folder Path",
         help="Example: Clients/2026 Uploads. Existing folders are reused; missing folders are created.",
         placeholder="Example: Clients/2026 Uploads",
+        value=(settings.box_target_folder_path or ""),
     )
     suralink_active_engagements_only = st.checkbox(
         "Only sync active engagements",
-        value=False,
+        value=settings.suralink_active_engagements_only,
         help="If enabled, inactive engagements for the customer will be filtered out before files are processed.",
     )
     box_overwrite_existing = st.checkbox(
         "Upload new Box versions when the file name already exists",
-        value=False,
+        value=settings.box_overwrite_existing,
         help="If enabled, a same-name file in the target Box folder will receive a new version instead of being skipped.",
     )
     suralink_approved_only = st.checkbox(
         "Only sync approved Suralink files",
-        value=False,
+        value=settings.suralink_approved_only,
         help="If enabled, only files whose Suralink request state is green or approved will be synced.",
     )
 

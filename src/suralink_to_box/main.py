@@ -562,6 +562,27 @@ def sync_to_box(
             )
 
         box_client = get_box_client(settings=s)
+        try:
+            current_box_user = box_client.users.get_user_me(fields=["id", "name", "login"])
+            log(
+                "Authenticated Box account: "
+                f"{current_box_user.name} ({current_box_user.login}) "
+                f"[id={current_box_user.id}]"
+            )
+        except Exception as e:
+            log(f"Warning: could not inspect current Box account identity: {type(e).__name__}: {e}")
+
+        if (getattr(s, "box_auth_method", None) or "").strip().lower() == "jwt":
+            configured_as_user = (getattr(s, "box_as_user_id", None) or "").strip()
+            if configured_as_user:
+                log(f"JWT As-User is configured: {configured_as_user}")
+            else:
+                log(
+                    "JWT is currently using the Box service account because BOX_AS_USER_ID is not set. "
+                    "If you expect uploads in a managed user's Box account, that user must be authorized "
+                    "for As-User access in the Box app configuration."
+                )
+
         root_folder_id, root_folder_path = _resolve_box_destination_settings(s, log=log)
         destination_root = (
             resolve_box_folder_path(
@@ -572,6 +593,13 @@ def sync_to_box(
             if root_folder_path
             else None
         )
+        if destination_root:
+            log(
+                "Resolved Box destination root: "
+                f"{root_folder_path} (id={destination_root.folder_id})"
+            )
+        else:
+            log(f"Resolved Box destination root: Box root (id={root_folder_id})")
 
         total_engagements_with_files = 0
         total_files_found = 0
