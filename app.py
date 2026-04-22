@@ -57,6 +57,33 @@ def _engagement_status_label(engagement_obj: dict) -> str:
     return f"State {raw_state}" if raw_state not in (None, "") else "Unknown"
 
 
+def _build_skipped_file_report(logs: list[str]) -> list[str]:
+    skipped_entries: list[str] = []
+    current_file_name: str | None = None
+    allowed_skip_reasons = {
+        "already tracked as synced",
+        "file already exists in Box",
+    }
+
+    for line in logs:
+        if "Processing:" in line and line.lstrip().startswith("["):
+            current_file_name = line.split("Processing:", 1)[1].strip()
+            continue
+
+        if line.startswith("Skipped ->"):
+            reason = line.replace("Skipped ->", "", 1).strip()
+            if reason not in allowed_skip_reasons:
+                continue
+            if current_file_name:
+                skipped_entries.append(f"{current_file_name} | {reason}")
+            else:
+                skipped_entries.append(reason)
+
+    if skipped_entries:
+        return skipped_entries
+    return ["No skipped files in this run."]
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_suralink_customer_options() -> list[dict[str, str]]:
     client = SuralinkClient(settings)
@@ -521,6 +548,10 @@ if submitted:
             except Exception as exc:
                 st.error(f"Sync failed: {type(exc).__name__}: {exc}")
             else:
+                st.session_state["sync_logs"] = _build_skipped_file_report(
+                    st.session_state.get("sync_logs", [])
+                )
+                render_logs()
                 st.success("Sync finished.")
                 col1, col2, col3 = summary_container.columns(3)
                 col1.metric("Engagements Selected", summary.engagements_selected)
