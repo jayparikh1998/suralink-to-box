@@ -281,6 +281,60 @@ def list_box_folder_path_options(
     ]
 
 
+def list_box_descendant_folder_options(
+    client: BoxClient,
+    *,
+    folder_id: str,
+) -> list[BoxFolderPathOption]:
+    """
+    List all descendant folders beneath the given folder id, returning paths
+    relative to that folder.
+    """
+    options: list[BoxFolderPathOption] = [
+        BoxFolderPathOption(folder_id=str(folder_id), relative_path="")
+    ]
+    stack: list[tuple[str, str]] = [(str(folder_id), "")]
+    seen_folder_ids = {str(folder_id)}
+
+    while stack:
+        current_folder_id, current_relative_path = stack.pop()
+        items = client.folders.get_folder_items(
+            folder_id=str(current_folder_id),
+            fields=["id", "name", "type"],
+            limit=1000,
+        )
+
+        child_folders = sorted(
+            [
+                entry for entry in items.entries
+                if getattr(entry, "type", None) == "folder"
+            ],
+            key=lambda entry: str(getattr(entry, "name", "")).lower(),
+        )
+
+        for child_folder in child_folders:
+            child_folder_id = str(child_folder.id)
+            if child_folder_id in seen_folder_ids:
+                continue
+
+            child_name = str(child_folder.name)
+            child_relative_path = (
+                f"{current_relative_path} / {child_name}"
+                if current_relative_path
+                else child_name
+            )
+            options.append(
+                BoxFolderPathOption(
+                    folder_id=child_folder_id,
+                    relative_path=child_relative_path,
+                )
+            )
+            seen_folder_ids.add(child_folder_id)
+            stack.append((child_folder_id, child_relative_path))
+
+    return [options[0], *sorted(options[1:], key=lambda option: option.relative_path.lower())]
+
+
 def upload_bytes_to_box(
     client: BoxClient,
     *,
