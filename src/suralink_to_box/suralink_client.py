@@ -174,6 +174,10 @@ class SuralinkClient:
 
         return clients
 
+    def list_client_engagements(self, client_id: str):
+        payload = self.get_json(f"/v1/clients/{client_id}/engagements")
+        return self._unwrap_list_response(payload)
+
     def list_requests(self, engagement_id: str, *, limit: int = 50, offset: int = 0):
         payload = self.get_json(
             f"/v1/engagements/{engagement_id}/request-item?limit={limit}&offset={offset}"

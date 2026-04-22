@@ -8,6 +8,7 @@ from suralink_to_box.box_client import (
 )
 from suralink_to_box.main import SyncOverrides, sync_to_box
 from suralink_to_box.settings import get_settings
+from suralink_to_box.suralink_client import SuralinkClient
 
 STRUCTURE_OPTIONS = {
     "Categories / Requests": "categories_requests",
@@ -23,6 +24,109 @@ st.set_page_config(
 settings = get_settings()
 configured_base_box_path = (settings.box_target_folder_path or "").strip()
 configured_root_folder_id = (settings.box_target_folder_id or "0").strip() or "0"
+
+
+def _pick_client_name(client_obj: dict) -> str:
+    return str(
+        client_obj.get("name")
+        or client_obj.get("clientName")
+        or client_obj.get("title")
+        or "(unnamed customer)"
+    )
+
+
+def _pick_client_custom_id(client_obj: dict) -> str:
+    return str(client_obj.get("customId") or "").strip()
+
+
+def _pick_client_id(client_obj: dict) -> str:
+    return str(client_obj.get("id") or client_obj.get("clientId") or "").strip()
+
+
+def _engagement_status_label(engagement_obj: dict) -> str:
+    raw_state = engagement_obj.get("state")
+    if isinstance(raw_state, str) and raw_state.strip().isdigit():
+        raw_state = int(raw_state.strip())
+
+    if raw_state == 1:
+        return "Active"
+    if raw_state == 2:
+        return "Inactive"
+    if raw_state == 3:
+        return "Archived"
+    return f"State {raw_state}" if raw_state not in (None, "") else "Unknown"
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_suralink_customer_options() -> list[dict[str, str]]:
+    client = SuralinkClient(settings)
+    try:
+        all_clients = client.list_all_clients()
+    finally:
+        client.close()
+
+    seen_keys: set[tuple[str, str]] = set()
+    options: list[dict[str, str]] = []
+    for client_obj in all_clients:
+        customer_name = _pick_client_name(client_obj).strip()
+        custom_id = _pick_client_custom_id(client_obj)
+        if not customer_name:
+            continue
+
+        dedupe_key = (customer_name.lower(), custom_id)
+        if dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+
+        label = (
+            f"{customer_name} (customId={custom_id})"
+            if custom_id
+            else customer_name
+        )
+        options.append(
+            {
+                "label": label,
+                "customer_name": customer_name,
+                "custom_id": custom_id,
+                "client_id": _pick_client_id(client_obj),
+            }
+        )
+
+    return sorted(options, key=lambda option: option["label"].lower())
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_suralink_engagement_options(
+    client_id: str,
+) -> list[dict[str, str]]:
+    client = SuralinkClient(settings)
+    try:
+        engagements = client.list_client_engagements(client_id)
+    finally:
+        client.close()
+
+    options: list[dict[str, str]] = []
+    for engagement in engagements:
+        engagement_id = str(engagement.get("id") or "").strip()
+        if not engagement_id:
+            continue
+
+        engagement_name = str(
+            engagement.get("name")
+            or engagement.get("title")
+            or f"engagement_{engagement_id}"
+        )
+        status_label = _engagement_status_label(engagement)
+        options.append(
+            {
+                "label": f"{engagement_name} [{status_label}] (id={engagement_id})",
+                "engagement_id": engagement_id,
+                "engagement_name": engagement_name,
+                "status_label": status_label,
+            }
+        )
+
+    return sorted(options, key=lambda option: option["label"].lower())
 
 
 def load_box_folder_picker_options() -> tuple[str, list[dict[str, str]]]:
@@ -124,6 +228,17 @@ if (
 
 box_folder_picker_error = st.session_state.get("box_folder_picker_error")
 box_folder_picker_options: list[dict[str, str]] = st.session_state.get("box_folder_picker_options", [])
+suralink_refresh = st.button("Refresh Suralink List")
+if suralink_refresh:
+    load_suralink_customer_options.clear()
+    load_suralink_engagement_options.clear()
+
+try:
+    suralink_customer_options = load_suralink_customer_options()
+    suralink_customer_error = None
+except Exception as exc:
+    suralink_customer_options = []
+    suralink_customer_error = f"{type(exc).__name__}: {exc}"
 
 st.title("Suralink to Box")
 st.caption("Sync Suralink engagement files into Box using the existing project credentials.")
@@ -133,12 +248,95 @@ st.caption(
     "Choose an existing folder under this base root to avoid typos and accidental folder creation."
 )
 st.subheader("Sync Setup")
-customer_name = st.text_input(
-    "Suralink Customer Name",
-    help="Sync all engagements for a customer by name.",
-    placeholder="Example: Acme Corp",
-    value=(settings.suralink_customer_name or ""),
+source_mode = st.radio(
+    "Suralink Source Selection",
+    options=["Pick from Suralink", "Type manually"],
+    index=0,
+    horizontal=True,
+    help="Pick live customers and engagements from Suralink, or type values manually.",
 )
+
+selected_customer_name = ""
+selected_customer_custom_id = ""
+selected_client_id = ""
+selected_engagement_id = ""
+selected_engagement_name = ""
+selected_engagement_label = "All engagements"
+
+if source_mode == "Pick from Suralink" and suralink_customer_options:
+    customer_labels = [option["label"] for option in suralink_customer_options]
+    default_customer_label = next(
+        (
+            option["label"]
+            for option in suralink_customer_options
+            if option["customer_name"] == (settings.suralink_customer_name or "")
+        ),
+        customer_labels[0],
+    )
+    selected_customer_label = st.selectbox(
+        "Select Suralink Customer",
+        options=customer_labels,
+        index=customer_labels.index(default_customer_label),
+        help="Choose a customer from the live Suralink customer list.",
+    )
+    selected_customer_option = next(
+        option for option in suralink_customer_options
+        if option["label"] == selected_customer_label
+    )
+    selected_customer_name = selected_customer_option["customer_name"]
+    selected_customer_custom_id = selected_customer_option["custom_id"]
+    selected_client_id = selected_customer_option["client_id"]
+
+    try:
+        engagement_options = load_suralink_engagement_options(
+            selected_client_id,
+        )
+        engagement_error = None
+    except Exception as exc:
+        engagement_options = []
+        engagement_error = f"{type(exc).__name__}: {exc}"
+
+    engagement_choice_options = ["(All engagements for this customer)"]
+    engagement_choice_options.extend(option["label"] for option in engagement_options)
+    selected_engagement_label = st.selectbox(
+        "Select Suralink Engagement",
+        options=engagement_choice_options,
+        index=0,
+        help="Choose one engagement, or keep the all-engagements option to sync the full customer.",
+    )
+    if selected_engagement_label != "(All engagements for this customer)":
+        selected_engagement_option = next(
+            option for option in engagement_options
+            if option["label"] == selected_engagement_label
+        )
+        selected_engagement_id = selected_engagement_option["engagement_id"]
+        selected_engagement_name = selected_engagement_option["engagement_name"]
+    elif engagement_error:
+        st.caption(f"Could not load engagements for this customer: {engagement_error}")
+elif source_mode == "Pick from Suralink":
+    st.warning("Could not load the Suralink customer list, so manual source entry is enabled.")
+    if suralink_customer_error:
+        st.caption(f"Suralink list error: {suralink_customer_error}")
+    source_mode = "Type manually"
+
+if source_mode == "Type manually":
+    selected_customer_name = st.text_input(
+        "Suralink Customer Name",
+        help="Sync all engagements for a customer by name when no engagement id is provided.",
+        placeholder="Example: Acme Corp",
+        value=(settings.suralink_customer_name or ""),
+    ).strip()
+    selected_engagement_name = st.text_input(
+        "Suralink Engagement Name",
+        help="Optional. If provided, sync only the engagement with this exact name.",
+        placeholder="Example: LL FCZO",
+        value=(settings.suralink_engagement_name or ""),
+    ).strip()
+    selected_engagement_label = (
+        f"Engagement `{selected_engagement_name}`"
+        if selected_engagement_name
+        else "All engagements"
+    )
 
 if box_folder_picker_options:
     folder_option_labels = [option["label"] for option in box_folder_picker_options]
@@ -222,11 +420,6 @@ else:
         placeholder="Example: Jay or Jay / Test",
         value="",
     )
-suralink_active_engagements_only = st.checkbox(
-    "Only sync active engagements",
-    value=settings.suralink_active_engagements_only,
-    help="If enabled, inactive engagements for the customer will be filtered out before files are processed.",
-)
 box_overwrite_existing = st.checkbox(
     "Upload new Box versions when the file name already exists",
     value=settings.box_overwrite_existing,
@@ -252,23 +445,29 @@ suralink_approved_only = st.checkbox(
 )
 
 st.markdown("### Preflight Summary")
-source_label = f"Customer `{customer_name.strip()}`" if customer_name.strip() else "Not set yet"
+if selected_engagement_id or selected_engagement_name:
+    source_label = (
+        f"Customer `{selected_customer_name or 'manual'}` / "
+        f"Engagement `{selected_engagement_label}`"
+    )
+elif selected_customer_name:
+    source_label = f"Customer `{selected_customer_name}` / {selected_engagement_label}"
+else:
+    source_label = "Not set yet"
 destination_label = box_target_folder_path.strip() or "Box root folder"
-engagement_label = "Active only" if suralink_active_engagements_only else "All engagements"
 overwrite_label = "Enabled" if box_overwrite_existing else "Disabled"
 structure_label = box_structure_label
 approved_label = "Approved only" if suralink_approved_only else "All statuses"
 
-preflight_col1, preflight_col2, preflight_col3, preflight_col4, preflight_col5, preflight_col6 = st.columns(6)
+preflight_col1, preflight_col2, preflight_col3, preflight_col4, preflight_col5 = st.columns(5)
 preflight_col1.info(f"Source: {source_label}")
 preflight_col2.info(f"Destination: `{destination_label}`")
-preflight_col3.info(f"Engagement Filter: `{engagement_label}`")
-preflight_col4.info(f"Overwrite Existing: `{overwrite_label}`")
-preflight_col5.info(f"Structure: `{structure_label}`")
-preflight_col6.info(f"Status Filter: `{approved_label}`")
+preflight_col3.info(f"Overwrite Existing: `{overwrite_label}`")
+preflight_col4.info(f"Structure: `{structure_label}`")
+preflight_col5.info(f"Status Filter: `{approved_label}`")
 
-if not customer_name.strip():
-    st.warning("Enter a Suralink customer name to run this sync.")
+if not selected_customer_name and not selected_engagement_id and not selected_engagement_name:
+    st.warning("Select a Suralink customer or enter a Suralink engagement name to run this sync.")
 
 submitted = st.button("Start Sync", use_container_width=True)
 
@@ -287,8 +486,8 @@ def render_logs() -> None:
 if submitted:
     st.session_state["sync_logs"] = []
 
-    if not customer_name.strip():
-        st.error("Enter a Suralink customer name.")
+    if not selected_customer_name and not selected_engagement_id and not selected_engagement_name:
+        st.error("Select a Suralink customer or enter a Suralink engagement name.")
     else:
         def append_log(message: str) -> None:
             logs = st.session_state.setdefault("sync_logs", [])
@@ -299,8 +498,19 @@ if submitted:
             try:
                 summary = sync_to_box(
                     overrides=SyncOverrides(
-                        suralink_customer_name=customer_name.strip() or None,
-                        suralink_active_engagements_only=suralink_active_engagements_only,
+                        suralink_engagement_id=selected_engagement_id or None,
+                        suralink_engagement_name=selected_engagement_name or None,
+                        suralink_customer_name=selected_customer_name or None,
+                        suralink_customer_custom_id=(
+                            selected_customer_custom_id or None
+                            if not selected_engagement_id and not selected_client_id
+                            else None
+                        ),
+                        suralink_client_id=(
+                            selected_client_id or None
+                            if not selected_engagement_id
+                            else None
+                        ),
                         box_target_folder_path=box_target_folder_path.strip() or None,
                         box_overwrite_existing=box_overwrite_existing,
                         box_structure_mode=STRUCTURE_OPTIONS[box_structure_label],

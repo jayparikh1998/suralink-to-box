@@ -22,8 +22,10 @@ STRUCTURE_JUST_FILES = "just_files"
 @dataclass
 class SyncOverrides:
     suralink_engagement_id: str | None = None
+    suralink_engagement_name: str | None = None
     suralink_customer_name: str | None = None
     suralink_customer_custom_id: str | None = None
+    suralink_client_id: str | None = None
     suralink_active_engagements_only: bool | None = None
     box_target_folder_id: str | None = None
     box_target_folder_path: str | None = None
@@ -486,7 +488,9 @@ def sync_to_box(
         log("\nSync Suralink engagements to Box with persistent file-id tracking")
 
         configured_engagement_id = (getattr(s, "suralink_engagement_id", None) or "").strip()
+        configured_engagement_name = (getattr(s, "suralink_engagement_name", None) or "").strip()
         configured_customer_custom_id = (getattr(s, "suralink_customer_custom_id", None) or "").strip()
+        configured_client_id = (getattr(s, "suralink_client_id", None) or "").strip()
         configured_customer_name = (getattr(s, "suralink_customer_name", None) or "").strip()
         active_engagements_only = bool(getattr(s, "suralink_active_engagements_only", False))
         overwrite_existing = bool(getattr(s, "box_overwrite_existing", False))
@@ -503,7 +507,7 @@ def sync_to_box(
 
         selected_engagements: list[dict] = []
 
-        # Priority: single engagement ID > customer custom ID > customer name > fallback
+        # Priority: single engagement ID > single engagement name > client id > customer custom ID > customer name > fallback
         if configured_engagement_id:
             log("1) Use engagement from settings")
             selected_engagements = [{"id": configured_engagement_id, "name": f"engagement_{configured_engagement_id}"}]
@@ -516,6 +520,59 @@ def sync_to_box(
                         break
             except Exception:
                 pass
+
+        elif configured_engagement_name:
+            log("1) Resolve engagement by name from settings")
+            candidate_engagements: list[dict] = []
+
+            if configured_client_id:
+                candidate_engagements = client.list_client_engagements(configured_client_id)
+                log(
+                    f"Loaded {len(candidate_engagements)} engagement(s) for clientId={configured_client_id} "
+                    "before engagement-name filtering."
+                )
+            elif configured_customer_name:
+                all_clients = client.list_all_clients()
+                matching_clients = [
+                    c for c in all_clients
+                    if (_pick_client_name(c) or "").strip().lower() == configured_customer_name.lower()
+                ]
+                if matching_clients:
+                    if len(matching_clients) > 1:
+                        log(
+                            f"Warning: found {len(matching_clients)} clients named "
+                            f"'{configured_customer_name}'. Using the first match."
+                        )
+                    matched_client_id = _pick_client_id(matching_clients[0])
+                    if matched_client_id:
+                        candidate_engagements = client.list_client_engagements(matched_client_id)
+                        log(
+                            f"Loaded {len(candidate_engagements)} engagement(s) for customer "
+                            f"'{configured_customer_name}' via clientId={matched_client_id}."
+                        )
+
+            if not candidate_engagements:
+                candidate_engagements = client.list_all_engagements()
+                log(
+                    f"Falling back to all engagements for engagement-name lookup "
+                    f"'{configured_engagement_name}'."
+                )
+
+            target_name = configured_engagement_name.lower()
+            selected_engagements = [
+                engagement
+                for engagement in candidate_engagements
+                if (_pick_name(engagement) or "").strip().lower() == target_name
+            ]
+            log(
+                f"Found {len(selected_engagements)} engagement(s) named "
+                f"'{configured_engagement_name}'."
+            )
+
+        elif configured_client_id:
+            log("1) Use client ID from settings")
+            selected_engagements = client.list_client_engagements(configured_client_id)
+            log(f"Found {len(selected_engagements)} engagement(s) for clientId={configured_client_id}.")
 
         elif configured_customer_custom_id:
             log("1) Use customer custom ID from settings")

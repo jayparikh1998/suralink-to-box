@@ -13,8 +13,10 @@ class Settings(BaseSettings):
     suralink_token: str
     suralink_download_endpoint: str | None = None
     suralink_engagement_id: str | None = None
+    suralink_engagement_name: str | None = None
     suralink_customer_name: str | None = None
     suralink_customer_custom_id: str | None = None
+    suralink_client_id: str | None = None
     suralink_active_engagements_only: bool = False
 
     # Box
