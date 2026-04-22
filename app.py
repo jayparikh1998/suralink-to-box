@@ -229,14 +229,30 @@ def load_box_child_folder_picker_options(
     return picker_options
 
 
-current_picker_cache_key = st.session_state.get("box_folder_picker_cache_key")
-expected_picker_prefix = f"{configured_root_folder_id}|{configured_base_box_path}|"
-refresh_folders = st.button("Refresh Box Folder List")
+st.title("Suralink to Box")
+st.caption("Move Suralink files into Box with a simple customer-to-folder workflow.")
+st.caption(
+    "Base Box root: "
+    f"`{configured_base_box_path or 'Box root'}`. "
+    "Choose an existing folder under this base root to avoid typos and accidental folder creation."
+)
+utility_col1, utility_col2 = st.columns([1, 1])
+with utility_col1:
+    refresh_folders = st.button("Refresh Box Folders")
+with utility_col2:
+    suralink_refresh = st.button("Refresh Suralink List")
+
 if refresh_folders:
     st.session_state.pop("box_folder_picker_cache_key", None)
     st.session_state.pop("box_folder_picker_options", None)
     st.session_state.pop("box_folder_picker_error", None)
 
+if suralink_refresh:
+    load_suralink_customer_options.clear()
+    load_suralink_engagement_options.clear()
+
+current_picker_cache_key = st.session_state.get("box_folder_picker_cache_key")
+expected_picker_prefix = f"{configured_root_folder_id}|{configured_base_box_path}|"
 if (
     "box_folder_picker_options" not in st.session_state
     or current_picker_cache_key is None
@@ -255,10 +271,6 @@ if (
 
 box_folder_picker_error = st.session_state.get("box_folder_picker_error")
 box_folder_picker_options: list[dict[str, str]] = st.session_state.get("box_folder_picker_options", [])
-suralink_refresh = st.button("Refresh Suralink List")
-if suralink_refresh:
-    load_suralink_customer_options.clear()
-    load_suralink_engagement_options.clear()
 
 try:
     suralink_customer_options = load_suralink_customer_options()
@@ -267,16 +279,10 @@ except Exception as exc:
     suralink_customer_options = []
     suralink_customer_error = f"{type(exc).__name__}: {exc}"
 
-st.title("Suralink to Box")
-st.caption("Sync Suralink engagement files into Box using the existing project credentials.")
-st.caption(
-    "Base Box root: "
-    f"`{configured_base_box_path or 'Box root'}`. "
-    "Choose an existing folder under this base root to avoid typos and accidental folder creation."
-)
-st.subheader("Sync Setup")
+st.markdown("### 1. What to Move")
+st.caption("Pick a Suralink customer and, if needed, one engagement.")
 source_mode = st.radio(
-    "Suralink Source Selection",
+    "Choose source",
     options=["Pick from Suralink", "Type manually"],
     index=0,
     horizontal=True,
@@ -301,7 +307,7 @@ if source_mode == "Pick from Suralink" and suralink_customer_options:
         customer_labels[0],
     )
     selected_customer_label = st.selectbox(
-        "Select Suralink Customer",
+        "Customer",
         options=customer_labels,
         index=customer_labels.index(default_customer_label),
         help="Choose a customer from the live Suralink customer list.",
@@ -326,7 +332,7 @@ if source_mode == "Pick from Suralink" and suralink_customer_options:
     engagement_choice_options = ["(All engagements for this customer)"]
     engagement_choice_options.extend(option["label"] for option in engagement_options)
     selected_engagement_label = st.selectbox(
-        "Select Suralink Engagement",
+        "Engagement",
         options=engagement_choice_options,
         index=0,
         help="Choose one engagement, or keep the all-engagements option to sync the full customer.",
@@ -348,13 +354,13 @@ elif source_mode == "Pick from Suralink":
 
 if source_mode == "Type manually":
     selected_customer_name = st.text_input(
-        "Suralink Customer Name",
+        "Customer Name",
         help="Sync all engagements for a customer by name when no engagement id is provided.",
         placeholder="Example: Acme Corp",
         value=(settings.suralink_customer_name or ""),
     ).strip()
     selected_engagement_name = st.text_input(
-        "Suralink Engagement Name",
+        "Engagement Name (Optional)",
         help="Optional. If provided, sync only the engagement with this exact name.",
         placeholder="Example: LL FCZO",
         value=(settings.suralink_engagement_name or ""),
@@ -365,6 +371,8 @@ if source_mode == "Type manually":
         else "All engagements"
     )
 
+st.markdown("### 2. Where to Put It in Box")
+st.caption("Choose an existing folder first, then optionally go deeper or add a subfolder path.")
 if box_folder_picker_options:
     folder_option_labels = [option["label"] for option in box_folder_picker_options]
     box_target_folder_label = st.selectbox(
@@ -384,7 +392,7 @@ if box_folder_picker_options:
     selected_subfolder_path = selected_existing_folder_path
     selected_subfolder_id = selected_existing_folder_id
     browse_nested_subfolders = st.checkbox(
-        "Browse Existing Nested Subfolders",
+        "Browse deeper existing folders",
         value=False,
         help="Drill down one folder level at a time inside the selected Box folder.",
     )
@@ -408,7 +416,7 @@ if box_folder_picker_options:
                 break
 
             selected_child_label = st.selectbox(
-                f"Select Existing Box Subfolder Level {level}",
+                f"Folder level {level}",
                 options=[option["label"] for option in child_folder_options],
                 index=0,
                 key=f"box_subfolder_level_{level}",
@@ -425,7 +433,7 @@ if box_folder_picker_options:
             selected_subfolder_id = selected_child_option["folder_id"]
 
     new_folder_name = st.text_input(
-        "Existing or New Subfolder Path",
+        "Existing Or New Subfolder Path",
         value="",
         help="Optionally enter a subfolder path under the selected Box folder or subfolder. Existing paths are reused; missing paths are created.",
         placeholder="Example: Jay or Jay / Test",
@@ -442,36 +450,41 @@ else:
     if box_folder_picker_error:
         st.caption(f"Folder list error: {box_folder_picker_error}")
     box_target_folder_path = st.text_input(
-        "Existing or New Subfolder Path",
+        "Existing Or New Subfolder Path",
         help="Enter a subfolder path under the configured base root. Existing paths are reused; missing paths are created.",
         placeholder="Example: Jay or Jay / Test",
         value="",
     )
-box_overwrite_existing = st.checkbox(
-    "Upload new Box versions when the file name already exists",
-    value=settings.box_overwrite_existing,
-    help="If enabled, a same-name file in the target Box folder will receive a new version instead of being skipped.",
-)
-configured_structure_mode = str(getattr(settings, "box_structure_mode", "just_files") or "just_files")
-structure_option_labels = list(STRUCTURE_OPTIONS.keys())
-structure_option_values = list(STRUCTURE_OPTIONS.values())
-try:
-    structure_index = structure_option_values.index(configured_structure_mode)
-except ValueError:
-    structure_index = structure_option_values.index("just_files")
-box_structure_label = st.selectbox(
-    "Box Folder Structure",
-    options=structure_option_labels,
-    index=structure_index,
-    help="Choose how files should be organized inside each engagement folder in Box.",
-)
-suralink_approved_only = st.checkbox(
-    "Only sync approved Suralink files",
-    value=settings.suralink_approved_only,
-    help="If enabled, only files whose Suralink request state is green or approved will be synced.",
-)
 
-st.markdown("### Preflight Summary")
+st.caption(f"Final Box destination: `{box_target_folder_path.strip() or configured_base_box_path or 'Box root'}`")
+
+st.markdown("### 3. Optional Rules")
+with st.expander("Advanced Options"):
+    box_overwrite_existing = st.checkbox(
+        "Upload new Box versions when the file name already exists",
+        value=settings.box_overwrite_existing,
+        help="If enabled, a same-name file in the target Box folder will receive a new version instead of being skipped.",
+    )
+    configured_structure_mode = str(getattr(settings, "box_structure_mode", "just_files") or "just_files")
+    structure_option_labels = list(STRUCTURE_OPTIONS.keys())
+    structure_option_values = list(STRUCTURE_OPTIONS.values())
+    try:
+        structure_index = structure_option_values.index(configured_structure_mode)
+    except ValueError:
+        structure_index = structure_option_values.index("just_files")
+    box_structure_label = st.selectbox(
+        "Box Folder Structure",
+        options=structure_option_labels,
+        index=structure_index,
+        help="Choose how files should be organized inside each engagement folder in Box.",
+    )
+    suralink_approved_only = st.checkbox(
+        "Only sync approved Suralink files",
+        value=settings.suralink_approved_only,
+        help="If enabled, only files whose Suralink request state is green or approved will be synced.",
+    )
+
+st.markdown("### Quick Check")
 if selected_engagement_id or selected_engagement_name:
     source_label = (
         f"Customer `{selected_customer_name or 'manual'}` / "
@@ -486,17 +499,27 @@ overwrite_label = "Enabled" if box_overwrite_existing else "Disabled"
 structure_label = box_structure_label
 approved_label = "Approved only" if suralink_approved_only else "All statuses"
 
-preflight_col1, preflight_col2, preflight_col3, preflight_col4, preflight_col5 = st.columns(5)
+options_label = (
+    f"Structure: `{structure_label}` | "
+    f"Status: `{approved_label}` | "
+    f"Overwrite existing: `{overwrite_label}`"
+)
+
+preflight_col1, preflight_col2, preflight_col3 = st.columns(3)
 preflight_col1.info(f"Source: {source_label}")
 preflight_col2.info(f"Destination: `{destination_label}`")
-preflight_col3.info(f"Overwrite Existing: `{overwrite_label}`")
-preflight_col4.info(f"Structure: `{structure_label}`")
-preflight_col5.info(f"Status Filter: `{approved_label}`")
+preflight_col3.info(options_label)
 
-if not selected_customer_name and not selected_engagement_id and not selected_engagement_name:
-    st.warning("Select a Suralink customer or enter a Suralink engagement name to run this sync.")
+can_sync = bool(selected_customer_name or selected_engagement_id or selected_engagement_name)
+if not can_sync:
+    st.info("Choose a customer, or type a customer and engagement name, to enable sync.")
 
-submitted = st.button("Start Sync", use_container_width=True)
+submitted = st.button(
+    "Start Sync",
+    type="primary",
+    use_container_width=True,
+    disabled=not can_sync,
+)
 
 
 log_container = st.container()
