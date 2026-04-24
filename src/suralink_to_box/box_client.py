@@ -12,6 +12,7 @@ from suralink_to_box.settings import Settings, get_settings
 
 from box_sdk_gen import BoxClient, BoxDeveloperTokenAuth, BoxJWTAuth, JWTConfig
 from box_sdk_gen import UploadFileAttributes, UploadFileAttributesParentField
+from box_sdk_gen.managers.files import UpdateFileByIdParent
 from box_sdk_gen.managers.uploads import UploadFileVersionAttributes
 from box_sdk_gen.schemas.folder_full import FolderFull
 
@@ -413,3 +414,21 @@ def upload_stream_to_box_version(
         file_content_type=content_type,
     ).entries[0]
     return BoxUploadResult(file_id=str(uploaded.id), file_name=str(uploaded.name))
+
+
+def move_box_file(
+    client: BoxClient,
+    *,
+    file_id: str,
+    parent_folder_id: str,
+    file_name: str | None = None,
+) -> BoxFileResult:
+    """
+    Move an existing Box file into a different folder. Optionally rename it.
+    """
+    updated = client.files.update_file_by_id(
+        file_id=file_id,
+        parent=UpdateFileByIdParent(id=str(parent_folder_id)),
+        name=file_name,
+    )
+    return BoxFileResult(file_id=str(updated.id), file_name=str(updated.name))

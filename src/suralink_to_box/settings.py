@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     box_target_folder_path: str | None = None
     box_as_user_id: str | None = None
     box_overwrite_existing: bool = False
+    box_mirror_mode: bool = False
     box_structure_mode: str = "just_files"
     suralink_approved_only: bool = False
 

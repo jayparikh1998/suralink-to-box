@@ -8,6 +8,7 @@ from suralink_to_box.box_client import (
     upload_stream_to_box,
     upload_stream_to_box_version,
     ensure_box_subfolder,
+    move_box_file,
     resolve_box_folder_path,
 )
 from suralink_to_box.sync_tracker import SyncTracker
@@ -17,6 +18,7 @@ PAGE_SIZE = 50
 STRUCTURE_CATEGORIES_REQUESTS = "categories_requests"
 STRUCTURE_CATEGORIES = "categories"
 STRUCTURE_JUST_FILES = "just_files"
+ARCHIVE_FOLDER_NAME = "_Archived from Suralink"
 
 
 @dataclass
@@ -30,6 +32,7 @@ class SyncOverrides:
     box_target_folder_id: str | None = None
     box_target_folder_path: str | None = None
     box_overwrite_existing: bool | None = None
+    box_mirror_mode: bool | None = None
     box_structure_mode: str | None = None
     suralink_approved_only: bool | None = None
 
@@ -40,6 +43,7 @@ class SyncSummary:
     engagements_with_files: int
     total_files_found: int
     uploaded_successfully: int
+    archived_missing: int
     skipped_existing_box: int
     skipped_tracked: int
     failed: int
@@ -231,6 +235,14 @@ def _resolve_request_folder_name(request_obj: dict | None, request_id: str) -> s
         request_name,
         fallback=f"Request {request_id}",
     )
+
+
+def _build_archived_file_name(file_name: str, suralink_file_id: str) -> str:
+    stem, dot, extension = file_name.rpartition(".")
+    suffix = f" [removed from Suralink {suralink_file_id}]"
+    if dot:
+        return f"{stem}{suffix}.{extension}"
+    return f"{file_name}{suffix}"
 
 
 def _fetch_all_requests(client: SuralinkClient, engagement_id: str) -> list[dict]:
@@ -494,6 +506,7 @@ def sync_to_box(
         configured_customer_name = (getattr(s, "suralink_customer_name", None) or "").strip()
         active_engagements_only = bool(getattr(s, "suralink_active_engagements_only", False))
         overwrite_existing = bool(getattr(s, "box_overwrite_existing", False))
+        mirror_mode = bool(getattr(s, "box_mirror_mode", False))
         structure_mode = _normalize_structure_mode(getattr(s, "box_structure_mode", None))
         approved_only = bool(getattr(s, "suralink_approved_only", False))
 
@@ -501,6 +514,11 @@ def sync_to_box(
             log("Active-engagement-only mode is enabled: inactive engagements will be filtered out before sync.")
         if overwrite_existing:
             log("Box overwrite mode is enabled: same-name files will be uploaded as new Box versions.")
+        if mirror_mode:
+            log(
+                "Mirror mode is enabled: tracked Box files that are no longer listed in Suralink "
+                f"will be moved into '{ARCHIVE_FOLDER_NAME}'."
+            )
         log(f"Box structure mode: {_structure_mode_label(structure_mode)}")
         if approved_only:
             log("Approved-only mode is enabled: only Suralink files with a green/approved request state will sync.")
@@ -656,6 +674,7 @@ def sync_to_box(
                 engagements_with_files=0,
                 total_files_found=0,
                 uploaded_successfully=0,
+                archived_missing=0,
                 skipped_existing_box=0,
                 skipped_tracked=0,
                 failed=0,
@@ -692,6 +711,7 @@ def sync_to_box(
                 engagements_with_files=0,
                 total_files_found=0,
                 uploaded_successfully=0,
+                archived_missing=0,
                 skipped_existing_box=0,
                 skipped_tracked=0,
                 failed=0,
@@ -740,6 +760,7 @@ def sync_to_box(
         total_engagements_with_files = 0
         total_files_found = 0
         uploaded_count = 0
+        archived_missing_count = 0
         skipped_existing_box_count = 0
         skipped_tracked_count = 0
         failed_count = 0
@@ -770,8 +791,134 @@ def sync_to_box(
                 log(f"Failed to list files for engagement {engagement_id}: {e}")
                 continue
 
+            tracked_entries = tracker.list_synced_files_for_engagement(engagement_id=engagement_id)
+            current_file_ids = {
+                str(file_obj.get("id"))
+                for file_obj in files
+                if file_obj.get("id") is not None
+            }
+            client_parent_folder_id = (
+                destination_root.folder_id
+                if destination_root
+                else root_folder_id
+            )
+            client_folder: tuple[str, str] | None = None
+            engagement_folder: tuple[str, str] | None = None
+            archive_folder: tuple[str, str] | None = None
+            base_path_parts = []
+            if root_folder_path:
+                base_path_parts.append(root_folder_path.strip("/"))
+            category_folder_cache: dict[str, tuple[str, str]] = {}
+            request_folder_cache: dict[str, tuple[str, str]] = {}
+
+            def ensure_engagement_destination() -> tuple[tuple[str, str], tuple[str, str]]:
+                nonlocal client_folder, engagement_folder
+
+                if client_folder is None:
+                    created_client_folder = ensure_box_subfolder(
+                        box_client,
+                        parent_folder_id=client_parent_folder_id,
+                        folder_name=client_name,
+                    )
+                    client_folder = (
+                        created_client_folder.folder_id,
+                        created_client_folder.folder_name,
+                    )
+
+                if engagement_folder is None:
+                    created_engagement_folder = ensure_box_subfolder(
+                        box_client,
+                        parent_folder_id=client_folder[0],
+                        folder_name=engagement_name,
+                    )
+                    engagement_folder = (
+                        created_engagement_folder.folder_id,
+                        created_engagement_folder.folder_name,
+                    )
+                    log(
+                        "Using Box folder path: "
+                        f"{' / '.join([*base_path_parts, client_folder[1], engagement_folder[1]])} "
+                        f"(id={engagement_folder[0]})"
+                    )
+
+                return client_folder, engagement_folder
+
+            if mirror_mode and tracked_entries:
+                missing_tracked_entries = [
+                    entry
+                    for entry in tracked_entries
+                    if entry.suralink_file_id not in current_file_ids
+                ]
+                if missing_tracked_entries:
+                    _, ensured_engagement_folder = ensure_engagement_destination()
+                    if archive_folder is None:
+                        created_archive_folder = ensure_box_subfolder(
+                            box_client,
+                            parent_folder_id=ensured_engagement_folder[0],
+                            folder_name=ARCHIVE_FOLDER_NAME,
+                        )
+                        archive_folder = (
+                            created_archive_folder.folder_id,
+                            created_archive_folder.folder_name,
+                        )
+                        log(
+                            "Mirror archive folder: "
+                            f"{' / '.join([*base_path_parts, client_name, engagement_name, archive_folder[1]])} "
+                            f"(id={archive_folder[0]})"
+                        )
+
+                    for tracked_entry in missing_tracked_entries:
+                        tracked_name = tracked_entry.file_name or f"file_{tracked_entry.suralink_file_id}"
+                        if not tracked_entry.box_file_id:
+                            tracker.unmark_synced(
+                                suralink_file_id=tracked_entry.suralink_file_id,
+                                engagement_id=engagement_id,
+                            )
+                            log(
+                                "Mirror -> removed local tracker entry for a file that is no longer "
+                                f"in Suralink but had no Box file id: {tracked_name}"
+                            )
+                            continue
+
+                        try:
+                            moved_file = move_box_file(
+                                box_client,
+                                file_id=tracked_entry.box_file_id,
+                                parent_folder_id=archive_folder[0],
+                                file_name=tracked_name,
+                            )
+                        except Exception as e:
+                            error_text = str(e)
+                            if "item_name_in_use" in error_text or "same name already exists" in error_text:
+                                moved_file = move_box_file(
+                                    box_client,
+                                    file_id=tracked_entry.box_file_id,
+                                    parent_folder_id=archive_folder[0],
+                                    file_name=_build_archived_file_name(
+                                        tracked_name,
+                                        tracked_entry.suralink_file_id,
+                                    ),
+                                )
+                            else:
+                                failed_count += 1
+                                log(
+                                    "Mirror -> failed to archive missing Suralink file "
+                                    f"{tracked_name}: {type(e).__name__}: {e}"
+                                )
+                                continue
+
+                        tracker.unmark_synced(
+                            suralink_file_id=tracked_entry.suralink_file_id,
+                            engagement_id=engagement_id,
+                        )
+                        archived_missing_count += 1
+                        log(
+                            "Mirror -> archived Box file because it is no longer present in Suralink: "
+                            f"{moved_file.file_name} (Box file id={moved_file.file_id})"
+                        )
+
             if not files:
-                log("No files found for this engagement. Skipping.")
+                log("No files found for this engagement. Skipping uploads.")
                 continue
 
             total_engagements_with_files += 1
@@ -788,19 +935,6 @@ def sync_to_box(
                 rid = _pick_id(request, ["id"])
                 if rid:
                     request_map[rid] = request
-
-            client_parent_folder_id = (
-                destination_root.folder_id
-                if destination_root
-                else root_folder_id
-            )
-            client_folder: tuple[str, str] | None = None
-            engagement_folder: tuple[str, str] | None = None
-            base_path_parts = []
-            if root_folder_path:
-                base_path_parts.append(root_folder_path.strip("/"))
-            category_folder_cache: dict[str, tuple[str, str]] = {}
-            request_folder_cache: dict[str, tuple[str, str]] = {}
 
             log(f"Found {len(files)} file(s) in engagement.")
 
@@ -843,42 +977,17 @@ def sync_to_box(
                     log("Skipped -> already tracked as synced")
                     continue
 
-                if client_folder is None:
-                    created_client_folder = ensure_box_subfolder(
-                        box_client,
-                        parent_folder_id=client_parent_folder_id,
-                        folder_name=client_name,
-                    )
-                    client_folder = (
-                        created_client_folder.folder_id,
-                        created_client_folder.folder_name,
-                    )
+                ensured_client_folder, ensured_engagement_folder = ensure_engagement_destination()
 
-                if engagement_folder is None:
-                    created_engagement_folder = ensure_box_subfolder(
-                        box_client,
-                        parent_folder_id=client_folder[0],
-                        folder_name=engagement_name,
-                    )
-                    engagement_folder = (
-                        created_engagement_folder.folder_id,
-                        created_engagement_folder.folder_name,
-                    )
-                    log(
-                        "Using Box folder path: "
-                        f"{' / '.join([*base_path_parts, client_folder[1], engagement_folder[1]])} "
-                        f"(id={engagement_folder[0]})"
-                    )
-
-                target_folder_id = engagement_folder[0]
-                target_path_parts = [*base_path_parts, client_folder[1], engagement_folder[1]]
+                target_folder_id = ensured_engagement_folder[0]
+                target_path_parts = [*base_path_parts, ensured_client_folder[1], ensured_engagement_folder[1]]
                 if structure_mode in {STRUCTURE_CATEGORIES_REQUESTS, STRUCTURE_CATEGORIES}:
                     category_folder_name = _resolve_category_folder_name(req)
                     category_folder = category_folder_cache.get(category_folder_name)
                     if category_folder is None:
                         created_category_folder = ensure_box_subfolder(
                             box_client,
-                            parent_folder_id=engagement_folder[0],
+                            parent_folder_id=ensured_engagement_folder[0],
                             folder_name=category_folder_name,
                         )
                         category_folder = (
@@ -1002,6 +1111,7 @@ def sync_to_box(
         log(f"Engagements with files: {total_engagements_with_files}")
         log(f"Total files found: {total_files_found}")
         log(f"Uploaded successfully: {uploaded_count}")
+        log(f"Archived from Box because missing in Suralink: {archived_missing_count}")
         log(f"Skipped (already existed in Box this run): {skipped_existing_box_count}")
         log(f"Skipped (already tracked from previous runs): {skipped_tracked_count}")
         log(f"Failed: {failed_count}")
@@ -1010,6 +1120,7 @@ def sync_to_box(
             engagements_with_files=total_engagements_with_files,
             total_files_found=total_files_found,
             uploaded_successfully=uploaded_count,
+            archived_missing=archived_missing_count,
             skipped_existing_box=skipped_existing_box_count,
             skipped_tracked=skipped_tracked_count,
             failed=failed_count,

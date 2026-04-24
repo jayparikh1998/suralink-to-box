@@ -84,6 +84,62 @@ def _build_skipped_file_report(logs: list[str]) -> list[str]:
     return ["No skipped files in this run."]
 
 
+def _collect_interesting_fields(value, *, prefix: str = "") -> dict[str, str]:
+    interesting_tokens = (
+        "download",
+        "read",
+        "view",
+        "status",
+        "state",
+        "history",
+        "created",
+        "updated",
+        "modified",
+        "deleted",
+        "sync",
+    )
+    collected: dict[str, str] = {}
+
+    if isinstance(value, dict):
+        for key, nested_value in value.items():
+            key_text = str(key)
+            nested_prefix = f"{prefix}.{key_text}" if prefix else key_text
+            lowered = nested_prefix.lower()
+            if any(token in lowered for token in interesting_tokens) and isinstance(
+                nested_value, (str, int, float, bool)
+            ):
+                collected[nested_prefix] = str(nested_value)
+            if isinstance(nested_value, (dict, list)):
+                collected.update(_collect_interesting_fields(nested_value, prefix=nested_prefix))
+    elif isinstance(value, list):
+        for index, nested_value in enumerate(value):
+            nested_prefix = f"{prefix}[{index}]" if prefix else f"[{index}]"
+            if isinstance(nested_value, (dict, list)):
+                collected.update(_collect_interesting_fields(nested_value, prefix=nested_prefix))
+
+    return collected
+
+
+def _build_file_debug_rows(file_payloads: list[dict]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for file_obj in file_payloads:
+        interesting_fields = _collect_interesting_fields(file_obj)
+        interesting_text = (
+            " | ".join(f"{key}={value}" for key, value in sorted(interesting_fields.items()))
+            if interesting_fields
+            else "(none found)"
+        )
+        rows.append(
+            {
+                "File Name": str(file_obj.get("fileName") or file_obj.get("name") or "(unnamed file)"),
+                "File ID": str(file_obj.get("id") or ""),
+                "Request ID": str(file_obj.get("requestId") or ""),
+                "Interesting Fields": interesting_text,
+            }
+        )
+    return rows
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_suralink_customer_options() -> list[dict[str, str]]:
     client = SuralinkClient(settings)
@@ -154,6 +210,31 @@ def load_suralink_engagement_options(
         )
 
     return sorted(options, key=lambda option: option["label"].lower())
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_suralink_engagement_file_payloads(
+    engagement_id: str,
+) -> list[dict]:
+    client = SuralinkClient(settings)
+    try:
+        all_files: list[dict] = []
+        offset = 0
+        page_size = 50
+
+        while True:
+            batch = client.list_engagement_files(engagement_id, limit=page_size, offset=offset)
+            if not batch:
+                break
+
+            all_files.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += page_size
+
+        return all_files
+    finally:
+        client.close()
 
 
 def load_box_folder_picker_options() -> tuple[str, list[dict[str, str]]]:
@@ -250,6 +331,7 @@ if refresh_folders:
 if suralink_refresh:
     load_suralink_customer_options.clear()
     load_suralink_engagement_options.clear()
+    load_suralink_engagement_file_payloads.clear()
 
 current_picker_cache_key = st.session_state.get("box_folder_picker_cache_key")
 expected_picker_prefix = f"{configured_root_folder_id}|{configured_base_box_path}|"
@@ -371,6 +453,63 @@ if source_mode == "Type manually":
         else "All engagements"
     )
 
+with st.expander("Suralink File Diagnostics"):
+    st.caption(
+        "Optional diagnostic tool. Use this to inspect the raw Suralink file payload for one "
+        "selected engagement so we can see whether flags like downloaded, viewed, or status are exposed."
+    )
+    if selected_engagement_id:
+        inspect_files = st.button(
+            "Inspect Selected Engagement Files",
+            help="Load the current file metadata from Suralink for the selected engagement.",
+        )
+        if inspect_files:
+            try:
+                st.session_state["suralink_file_diagnostics_payloads"] = load_suralink_engagement_file_payloads(
+                    selected_engagement_id
+                )
+                st.session_state["suralink_file_diagnostics_engagement_id"] = selected_engagement_id
+            except Exception as exc:
+                st.session_state["suralink_file_diagnostics_error"] = f"{type(exc).__name__}: {exc}"
+            else:
+                st.session_state["suralink_file_diagnostics_error"] = None
+
+        diagnostics_error = st.session_state.get("suralink_file_diagnostics_error")
+        diagnostics_engagement_id = st.session_state.get("suralink_file_diagnostics_engagement_id")
+        diagnostics_payloads = (
+            st.session_state.get("suralink_file_diagnostics_payloads", [])
+            if diagnostics_engagement_id == selected_engagement_id
+            else []
+        )
+
+        if diagnostics_error and diagnostics_engagement_id == selected_engagement_id:
+            st.warning(f"Could not inspect the selected engagement files: {diagnostics_error}")
+
+        if diagnostics_payloads:
+            st.caption(f"Found `{len(diagnostics_payloads)}` file payload(s) for this engagement.")
+            st.dataframe(
+                _build_file_debug_rows(diagnostics_payloads),
+                use_container_width=True,
+            )
+
+            file_picker_labels = [
+                f"{file_obj.get('fileName') or file_obj.get('name') or '(unnamed file)'} "
+                f"(id={file_obj.get('id') or '?'})"
+                for file_obj in diagnostics_payloads
+            ]
+            selected_file_label = st.selectbox(
+                "View raw payload for file",
+                options=file_picker_labels,
+                index=0,
+                key=f"suralink_file_payload_picker_{selected_engagement_id}",
+            )
+            selected_file_index = file_picker_labels.index(selected_file_label)
+            st.json(diagnostics_payloads[selected_file_index], expanded=False)
+        elif diagnostics_engagement_id == selected_engagement_id and not diagnostics_error:
+            st.info("No file payloads were returned for this engagement.")
+    else:
+        st.info("Pick a specific Suralink engagement first to inspect file metadata.")
+
 st.markdown("### 2. Where to Put It in Box")
 st.caption("Choose an existing folder first, then optionally go deeper or add a subfolder path.")
 if box_folder_picker_options:
@@ -465,6 +604,11 @@ with st.expander("Advanced Options"):
         value=settings.box_overwrite_existing,
         help="If enabled, a same-name file in the target Box folder will receive a new version instead of being skipped.",
     )
+    box_mirror_mode = st.checkbox(
+        "Mirror Suralink removals in Box",
+        value=getattr(settings, "box_mirror_mode", False),
+        help="If enabled, files that were previously synced but are no longer listed in Suralink will be moved into an archive folder in Box.",
+    )
     configured_structure_mode = str(getattr(settings, "box_structure_mode", "just_files") or "just_files")
     structure_option_labels = list(STRUCTURE_OPTIONS.keys())
     structure_option_values = list(STRUCTURE_OPTIONS.values())
@@ -502,7 +646,8 @@ approved_label = "Approved only" if suralink_approved_only else "All statuses"
 options_label = (
     f"Structure: `{structure_label}` | "
     f"Status: `{approved_label}` | "
-    f"Overwrite existing: `{overwrite_label}`"
+    f"Overwrite existing: `{overwrite_label}` | "
+    f"Mirror removals: `{'Enabled' if box_mirror_mode else 'Disabled'}`"
 )
 
 preflight_col1, preflight_col2, preflight_col3 = st.columns(3)
@@ -563,6 +708,7 @@ if submitted:
                         ),
                         box_target_folder_path=box_target_folder_path.strip() or None,
                         box_overwrite_existing=box_overwrite_existing,
+                        box_mirror_mode=box_mirror_mode,
                         box_structure_mode=STRUCTURE_OPTIONS[box_structure_label],
                         suralink_approved_only=suralink_approved_only,
                     ),
@@ -581,11 +727,12 @@ if submitted:
                 col2.metric("Engagements With Files", summary.engagements_with_files)
                 col3.metric("Files Found", summary.total_files_found)
 
-                col4, col5, col6, col7 = summary_container.columns(4)
+                col4, col5, col6, col7, col8 = summary_container.columns(5)
                 col4.metric("Uploaded", summary.uploaded_successfully)
-                col5.metric("Skipped Existing", summary.skipped_existing_box)
-                col6.metric("Skipped Tracked", summary.skipped_tracked)
-                col7.metric("Failed", summary.failed)
+                col5.metric("Archived Missing", summary.archived_missing)
+                col6.metric("Skipped Existing", summary.skipped_existing_box)
+                col7.metric("Skipped Tracked", summary.skipped_tracked)
+                col8.metric("Failed", summary.failed)
 
 
 with log_container:
