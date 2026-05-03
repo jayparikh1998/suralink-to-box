@@ -218,6 +218,36 @@ def resolve_box_folder_path(
     return current
 
 
+def resolve_box_folder_shared_link(
+    client: BoxClient,
+    *,
+    shared_link: str,
+    shared_link_password: str | None = None,
+) -> BoxFolderResult:
+    """
+    Resolve a Box folder shared link into the folder id the API needs for
+    uploads. The authenticated Box user or service account must be allowed to
+    access the shared link.
+    """
+    cleaned_link = shared_link.strip()
+    if not cleaned_link:
+        raise ValueError("Paste a Box shared link before syncing.")
+
+    boxapi = f"shared_link={cleaned_link}"
+    cleaned_password = (shared_link_password or "").strip()
+    if cleaned_password:
+        boxapi += f"&shared_link_password={cleaned_password}"
+
+    folder: FolderFull = client.shared_links_folders.find_folder_for_shared_link(
+        boxapi,
+        fields=["id", "name", "type"],
+    )
+    if getattr(folder, "type", None) != "folder":
+        raise ValueError("The Box shared link must point to a folder.")
+
+    return BoxFolderResult(folder_id=str(folder.id), folder_name=str(folder.name))
+
+
 def find_box_file_in_folder(
     client: BoxClient,
     *,

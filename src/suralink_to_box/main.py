@@ -10,6 +10,7 @@ from suralink_to_box.box_client import (
     ensure_box_subfolder,
     move_box_file,
     resolve_box_folder_path,
+    resolve_box_folder_shared_link,
 )
 from suralink_to_box.sync_tracker import SyncTracker
 
@@ -31,6 +32,7 @@ class SyncOverrides:
     suralink_active_engagements_only: bool | None = None
     box_target_folder_id: str | None = None
     box_target_folder_path: str | None = None
+    box_target_folder_shared_link: str | None = None
     box_overwrite_existing: bool | None = None
     box_mirror_mode: bool | None = None
     box_structure_mode: str | None = None
@@ -739,7 +741,21 @@ def sync_to_box(
                     "for As-User access in the Box app configuration."
                 )
 
+        shared_link = (getattr(s, "box_target_folder_shared_link", None) or "").strip()
         root_folder_id, root_folder_path = _resolve_box_destination_settings(s, log=log)
+        base_path_parts = []
+        if shared_link:
+            shared_folder = resolve_box_folder_shared_link(
+                box_client,
+                shared_link=shared_link,
+            )
+            root_folder_id = shared_folder.folder_id
+            base_path_parts.append(shared_folder.folder_name)
+            log(
+                "Resolved Box shared-link folder: "
+                f"{shared_folder.folder_name} (id={shared_folder.folder_id})"
+            )
+
         destination_root = (
             resolve_box_folder_path(
                 box_client,
@@ -750,10 +766,17 @@ def sync_to_box(
             else None
         )
         if destination_root:
+            base_path_parts.extend(
+                part.strip()
+                for part in root_folder_path.strip("/").split("/")
+                if part.strip()
+            )
             log(
                 "Resolved Box destination root: "
-                f"{root_folder_path} (id={destination_root.folder_id})"
+                f"{' / '.join(base_path_parts)} (id={destination_root.folder_id})"
             )
+        elif shared_link:
+            log(f"Resolved Box destination root: {' / '.join(base_path_parts)} (id={root_folder_id})")
         else:
             log(f"Resolved Box destination root: Box root (id={root_folder_id})")
 
@@ -805,9 +828,7 @@ def sync_to_box(
             client_folder: tuple[str, str] | None = None
             engagement_folder: tuple[str, str] | None = None
             archive_folder: tuple[str, str] | None = None
-            base_path_parts = []
-            if root_folder_path:
-                base_path_parts.append(root_folder_path.strip("/"))
+            engagement_base_path_parts = base_path_parts.copy()
             category_folder_cache: dict[str, tuple[str, str]] = {}
             request_folder_cache: dict[str, tuple[str, str]] = {}
 
@@ -837,7 +858,7 @@ def sync_to_box(
                     )
                     log(
                         "Using Box folder path: "
-                        f"{' / '.join([*base_path_parts, client_folder[1], engagement_folder[1]])} "
+                        f"{' / '.join([*engagement_base_path_parts, client_folder[1], engagement_folder[1]])} "
                         f"(id={engagement_folder[0]})"
                     )
 
@@ -863,7 +884,7 @@ def sync_to_box(
                         )
                         log(
                             "Mirror archive folder: "
-                            f"{' / '.join([*base_path_parts, client_name, engagement_name, archive_folder[1]])} "
+                            f"{' / '.join([*engagement_base_path_parts, client_name, engagement_name, archive_folder[1]])} "
                             f"(id={archive_folder[0]})"
                         )
 
@@ -980,7 +1001,7 @@ def sync_to_box(
                 ensured_client_folder, ensured_engagement_folder = ensure_engagement_destination()
 
                 target_folder_id = ensured_engagement_folder[0]
-                target_path_parts = [*base_path_parts, ensured_client_folder[1], ensured_engagement_folder[1]]
+                target_path_parts = [*engagement_base_path_parts, ensured_client_folder[1], ensured_engagement_folder[1]]
                 if structure_mode in {STRUCTURE_CATEGORIES_REQUESTS, STRUCTURE_CATEGORIES}:
                     category_folder_name = _resolve_category_folder_name(req)
                     category_folder = category_folder_cache.get(category_folder_name)

@@ -72,6 +72,7 @@ Notes:
 - `BOX_TARGET_FOLDER_ID=0` means the Box root folder.
 - With JWT auth, root usually means the app service account unless `BOX_AS_USER_ID` is set.
 - Store JWT config files outside the repo.
+- In Streamlit mode, users can paste a Box folder shared link copied from Box's Share button. The authenticated Box account still needs permission to access that folder.
 
 ## Choose What To Sync
 

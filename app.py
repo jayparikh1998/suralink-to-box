@@ -5,6 +5,7 @@ import streamlit as st
 from suralink_to_box.box_client import (
     get_box_client,
     list_box_folder_path_options,
+    resolve_box_folder_shared_link,
 )
 from suralink_to_box.main import SyncOverrides, sync_to_box
 from suralink_to_box.settings import get_settings
@@ -335,21 +336,6 @@ if suralink_refresh:
 
 current_picker_cache_key = st.session_state.get("box_folder_picker_cache_key")
 expected_picker_prefix = f"{configured_root_folder_id}|{configured_base_box_path}|"
-if (
-    "box_folder_picker_options" not in st.session_state
-    or current_picker_cache_key is None
-    or not str(current_picker_cache_key).startswith(expected_picker_prefix)
-):
-    try:
-        picker_cache_key, picker_options = load_box_folder_picker_options()
-    except Exception as exc:
-        st.session_state["box_folder_picker_error"] = f"{type(exc).__name__}: {exc}"
-        st.session_state["box_folder_picker_options"] = []
-        st.session_state["box_folder_picker_cache_key"] = None
-    else:
-        st.session_state["box_folder_picker_error"] = None
-        st.session_state["box_folder_picker_options"] = picker_options
-        st.session_state["box_folder_picker_cache_key"] = picker_cache_key
 
 box_folder_picker_error = st.session_state.get("box_folder_picker_error")
 box_folder_picker_options: list[dict[str, str]] = st.session_state.get("box_folder_picker_options", [])
@@ -511,91 +497,166 @@ with st.expander("Suralink File Diagnostics"):
         st.info("Pick a specific Suralink engagement first to inspect file metadata.")
 
 st.markdown("### 2. Where to Put It in Box")
-st.caption("Choose an existing folder first, then optionally go deeper or add a subfolder path.")
-if box_folder_picker_options:
-    folder_option_labels = [option["label"] for option in box_folder_picker_options]
-    box_target_folder_label = st.selectbox(
-        "Select Existing Box Folder",
-        options=folder_option_labels,
-        index=0,
-        help="Choose an existing Box folder under the configured base root.",
-    )
-    selected_folder_option = next(
-        option for option in box_folder_picker_options
-        if option["label"] == box_target_folder_label
-    )
-    selected_existing_folder_path = selected_folder_option["path"]
-    selected_existing_folder_id = selected_folder_option["folder_id"]
-    selected_is_base_root = box_target_folder_label.startswith("(Base root)")
+st.caption("Paste a Box folder shared link, or browse the configured Box root.")
+box_destination_mode = st.radio(
+    "Choose Box destination method",
+    options=["Paste Box shared link", "Browse configured folders"],
+    index=0,
+    horizontal=True,
+    help="Use the link copied from Box's Share button, or choose from the configured Box root.",
+)
+box_target_folder_shared_link = ""
+box_destination_ready = True
 
-    selected_subfolder_path = selected_existing_folder_path
-    selected_subfolder_id = selected_existing_folder_id
-    browse_nested_subfolders = st.checkbox(
-        "Browse deeper existing folders",
-        value=False,
-        help="Drill down one folder level at a time inside the selected Box folder.",
-    )
-    if browse_nested_subfolders and selected_is_base_root:
-        st.caption(
-            "Choose a specific existing Box folder first, then enable nested browsing. "
-            "That keeps the folder browser fast and easier to use."
-        )
-    elif browse_nested_subfolders:
-        for level in range(1, 7):
-            try:
-                child_folder_options = load_box_child_folder_picker_options(
-                    selected_subfolder_path,
-                    selected_subfolder_id,
-                )
-            except Exception as exc:
-                st.caption(f"Could not load subfolders at level {level}: {type(exc).__name__}: {exc}")
-                break
-
-            if len(child_folder_options) <= 1:
-                break
-
-            selected_child_label = st.selectbox(
-                f"Folder level {level}",
-                options=[option["label"] for option in child_folder_options],
-                index=0,
-                key=f"box_subfolder_level_{level}",
-                help="Choose the next folder level, or stop here.",
-            )
-            if selected_child_label == "(Stop here)":
-                break
-
-            selected_child_option = next(
-                option for option in child_folder_options
-                if option["label"] == selected_child_label
-            )
-            selected_subfolder_path = selected_child_option["path"]
-            selected_subfolder_id = selected_child_option["folder_id"]
-
+if box_destination_mode == "Paste Box shared link":
+    box_target_folder_shared_link = st.text_input(
+        "Box Folder Shared Link",
+        value=(settings.box_target_folder_shared_link or ""),
+        help="Paste the shared link copied from Box after turning Share link on. The link must point to a folder the Box account can access.",
+        placeholder="https://yourcompany.box.com/s/...",
+    ).strip()
     new_folder_name = st.text_input(
         "Existing Or New Subfolder Path",
         value="",
-        help="Optionally enter a subfolder path under the selected Box folder or subfolder. Existing paths are reused; missing paths are created.",
+        help="Optional. Existing paths below the shared-link folder are reused; missing paths are created.",
         placeholder="Example: Jay or Jay / Test",
+        key="shared_link_subfolder_path",
     ).strip()
-    box_target_folder_path = (
-        f"{selected_subfolder_path} / {new_folder_name}"
-        if new_folder_name
-        else selected_subfolder_path
-    )
-else:
-    st.warning(
-        "Could not load the Box folder list, so manual path entry is temporarily enabled."
-    )
-    if box_folder_picker_error:
-        st.caption(f"Folder list error: {box_folder_picker_error}")
-    box_target_folder_path = st.text_input(
-        "Existing Or New Subfolder Path",
-        help="Enter a subfolder path under the configured base root. Existing paths are reused; missing paths are created.",
-        placeholder="Example: Jay or Jay / Test",
-        value="",
-    )
+    box_target_folder_path = new_folder_name
+    box_destination_ready = bool(box_target_folder_shared_link)
 
-st.caption(f"Final Box destination: `{box_target_folder_path.strip() or configured_base_box_path or 'Box root'}`")
+    if box_target_folder_shared_link:
+        validate_shared_link = st.button(
+            "Check Box Shared Link",
+            help="Confirm the pasted link resolves to a Box folder before running the sync.",
+        )
+        if validate_shared_link:
+            try:
+                resolved_shared_folder = resolve_box_folder_shared_link(
+                    get_box_client(settings=settings),
+                    shared_link=box_target_folder_shared_link,
+                )
+            except Exception as exc:
+                st.warning(f"Could not resolve the shared link: {type(exc).__name__}: {exc}")
+            else:
+                st.success(
+                    "Shared link resolves to "
+                    f"`{resolved_shared_folder.folder_name}` "
+                    f"(id={resolved_shared_folder.folder_id})."
+                )
+    else:
+        st.info("Paste a Box folder shared link to enable sync.")
+else:
+    current_picker_cache_key = st.session_state.get("box_folder_picker_cache_key")
+    if (
+        "box_folder_picker_options" not in st.session_state
+        or current_picker_cache_key is None
+        or not str(current_picker_cache_key).startswith(expected_picker_prefix)
+    ):
+        try:
+            picker_cache_key, picker_options = load_box_folder_picker_options()
+        except Exception as exc:
+            st.session_state["box_folder_picker_error"] = f"{type(exc).__name__}: {exc}"
+            st.session_state["box_folder_picker_options"] = []
+            st.session_state["box_folder_picker_cache_key"] = None
+        else:
+            st.session_state["box_folder_picker_error"] = None
+            st.session_state["box_folder_picker_options"] = picker_options
+            st.session_state["box_folder_picker_cache_key"] = picker_cache_key
+
+    box_folder_picker_error = st.session_state.get("box_folder_picker_error")
+    box_folder_picker_options = st.session_state.get("box_folder_picker_options", [])
+
+    if box_folder_picker_options:
+        folder_option_labels = [option["label"] for option in box_folder_picker_options]
+        box_target_folder_label = st.selectbox(
+            "Select Existing Box Folder",
+            options=folder_option_labels,
+            index=0,
+            help="Choose an existing Box folder under the configured base root.",
+        )
+        selected_folder_option = next(
+            option for option in box_folder_picker_options
+            if option["label"] == box_target_folder_label
+        )
+        selected_existing_folder_path = selected_folder_option["path"]
+        selected_existing_folder_id = selected_folder_option["folder_id"]
+        selected_is_base_root = box_target_folder_label.startswith("(Base root)")
+
+        selected_subfolder_path = selected_existing_folder_path
+        selected_subfolder_id = selected_existing_folder_id
+        browse_nested_subfolders = st.checkbox(
+            "Browse deeper existing folders",
+            value=False,
+            help="Drill down one folder level at a time inside the selected Box folder.",
+        )
+        if browse_nested_subfolders and selected_is_base_root:
+            st.caption(
+                "Choose a specific existing Box folder first, then enable nested browsing. "
+                "That keeps the folder browser fast and easier to use."
+            )
+        elif browse_nested_subfolders:
+            for level in range(1, 7):
+                try:
+                    child_folder_options = load_box_child_folder_picker_options(
+                        selected_subfolder_path,
+                        selected_subfolder_id,
+                    )
+                except Exception as exc:
+                    st.caption(f"Could not load subfolders at level {level}: {type(exc).__name__}: {exc}")
+                    break
+
+                if len(child_folder_options) <= 1:
+                    break
+
+                selected_child_label = st.selectbox(
+                    f"Folder level {level}",
+                    options=[option["label"] for option in child_folder_options],
+                    index=0,
+                    key=f"box_subfolder_level_{level}",
+                    help="Choose the next folder level, or stop here.",
+                )
+                if selected_child_label == "(Stop here)":
+                    break
+
+                selected_child_option = next(
+                    option for option in child_folder_options
+                    if option["label"] == selected_child_label
+                )
+                selected_subfolder_path = selected_child_option["path"]
+                selected_subfolder_id = selected_child_option["folder_id"]
+
+        new_folder_name = st.text_input(
+            "Existing Or New Subfolder Path",
+            value="",
+            help="Optionally enter a subfolder path under the selected Box folder or subfolder. Existing paths are reused; missing paths are created.",
+            placeholder="Example: Jay or Jay / Test",
+        ).strip()
+        box_target_folder_path = (
+            f"{selected_subfolder_path} / {new_folder_name}"
+            if new_folder_name
+            else selected_subfolder_path
+        )
+    else:
+        st.warning(
+            "Could not load the Box folder list, so manual path entry is temporarily enabled."
+        )
+        if box_folder_picker_error:
+            st.caption(f"Folder list error: {box_folder_picker_error}")
+        box_target_folder_path = st.text_input(
+            "Existing Or New Subfolder Path",
+            help="Enter a subfolder path under the configured base root. Existing paths are reused; missing paths are created.",
+            placeholder="Example: Jay or Jay / Test",
+            value="",
+        )
+
+if box_destination_mode == "Paste Box shared link":
+    destination_preview = "Shared-link folder"
+    if box_target_folder_path.strip():
+        destination_preview = f"{destination_preview} / {box_target_folder_path.strip()}"
+else:
+    destination_preview = box_target_folder_path.strip() or configured_base_box_path or "Box root"
+st.caption(f"Final Box destination: `{destination_preview}`")
 
 st.markdown("### 3. Optional Rules")
 with st.expander("Advanced Options"):
@@ -638,7 +699,7 @@ elif selected_customer_name:
     source_label = f"Customer `{selected_customer_name}` / {selected_engagement_label}"
 else:
     source_label = "Not set yet"
-destination_label = box_target_folder_path.strip() or "Box root folder"
+destination_label = destination_preview
 overwrite_label = "Enabled" if box_overwrite_existing else "Disabled"
 structure_label = box_structure_label
 approved_label = "Approved only" if suralink_approved_only else "All statuses"
@@ -656,8 +717,11 @@ preflight_col2.info(f"Destination: `{destination_label}`")
 preflight_col3.info(options_label)
 
 can_sync = bool(selected_customer_name or selected_engagement_id or selected_engagement_name)
-if not can_sync:
+can_sync = can_sync and box_destination_ready
+if not selected_customer_name and not selected_engagement_id and not selected_engagement_name:
     st.info("Choose a customer, or type a customer and engagement name, to enable sync.")
+elif not box_destination_ready:
+    st.info("Paste a Box folder shared link to enable sync.")
 
 submitted = st.button(
     "Start Sync",
@@ -706,7 +770,12 @@ if submitted:
                             if not selected_engagement_id
                             else None
                         ),
-                        box_target_folder_path=box_target_folder_path.strip() or None,
+                        box_target_folder_shared_link=box_target_folder_shared_link or None,
+                        box_target_folder_path=(
+                            box_target_folder_path.strip()
+                            if box_destination_mode == "Paste Box shared link"
+                            else box_target_folder_path.strip() or None
+                        ),
                         box_overwrite_existing=box_overwrite_existing,
                         box_mirror_mode=box_mirror_mode,
                         box_structure_mode=STRUCTURE_OPTIONS[box_structure_label],
