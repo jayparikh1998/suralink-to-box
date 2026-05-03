@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import streamlit as st
 
 from suralink_to_box.box_client import (
@@ -25,6 +27,7 @@ st.set_page_config(
 settings = get_settings()
 configured_base_box_path = (settings.box_target_folder_path or "").strip()
 configured_root_folder_id = (settings.box_target_folder_id or "0").strip() or "0"
+app_logo_path = Path("logo/s&a-logo.png")
 
 
 def _pick_client_name(client_obj: dict) -> str:
@@ -311,7 +314,12 @@ def load_box_child_folder_picker_options(
     return picker_options
 
 
-st.title("Suralink to Box")
+header_logo_col, header_title_col = st.columns([1, 6], vertical_alignment="center")
+with header_logo_col:
+    if app_logo_path.exists():
+        st.image(str(app_logo_path), width=120)
+with header_title_col:
+    st.title("Suralink to Box")
 st.caption("Move Suralink files into Box with a simple customer-to-folder workflow.")
 st.caption(
     "Base Box root: "

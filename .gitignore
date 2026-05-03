@@ -3,6 +3,7 @@
 !/.env.example
 /.venv/
 /downloads/
+/logo/
 /sync_state.db
 /box_config*.json
 /JWT_config.json
