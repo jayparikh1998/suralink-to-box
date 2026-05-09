@@ -8,6 +8,8 @@ from io import BufferedIOBase
 from pathlib import Path
 from textwrap import wrap
 
+import httpx
+
 from suralink_to_box.settings import Settings, get_settings
 
 from box_sdk_gen import BoxClient, BoxDeveloperTokenAuth, BoxJWTAuth, JWTConfig
@@ -238,14 +240,32 @@ def resolve_box_folder_shared_link(
     if cleaned_password:
         boxapi += f"&shared_link_password={cleaned_password}"
 
-    folder: FolderFull = client.shared_links_folders.find_folder_for_shared_link(
-        boxapi,
-        fields=["id", "name", "type"],
+    headers = {
+        "Authorization": client.auth.retrieve_authorization_header(
+            network_session=client.network_session
+        ),
+        "boxapi": boxapi,
+        "Accept": "application/json",
+        **getattr(client.network_session, "additional_headers", {}),
+    }
+    base_url = getattr(client.network_session.base_urls, "base_url", "https://api.box.com").rstrip("/")
+    response = httpx.get(
+        f"{base_url}/2.0/shared_items",
+        params={"fields": "id,name,type"},
+        headers=headers,
+        follow_redirects=True,
+        timeout=60.0,
     )
-    if getattr(folder, "type", None) != "folder":
+
+    response.raise_for_status()
+    payload = response.json()
+    if str(payload.get("type") or "").lower() != "folder":
         raise ValueError("The Box shared link must point to a folder.")
 
-    return BoxFolderResult(folder_id=str(folder.id), folder_name=str(folder.name))
+    return BoxFolderResult(
+        folder_id=str(payload.get("id") or ""),
+        folder_name=str(payload.get("name") or ""),
+    )
 
 
 def find_box_file_in_folder(
