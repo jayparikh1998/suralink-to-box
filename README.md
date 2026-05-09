@@ -70,7 +70,9 @@ BOX_AS_USER_ID=
 
 Notes:
 - `BOX_TARGET_FOLDER_ID=0` means the Box root folder.
-- With JWT auth, root usually means the app service account unless `BOX_AS_USER_ID` is set.
+- With JWT auth, `BOX_TARGET_FOLDER_ID=0` means the root folder of the authenticated Box identity.
+- If `BOX_AS_USER_ID` is empty, JWT uses the Box app service account. Existing folders from your normal Box user will not appear there, and uploads to root will be owned by the service account instead of showing in your personal Box root.
+- To browse and upload into a managed user's Box account, set `BOX_AS_USER_ID` to that user's numeric Box ID. The Box app must be admin-authorized with the right application access and As-User permissions.
 - Store JWT config files outside the repo.
 - In Streamlit mode, users can paste a Box folder shared link copied from Box's Share button. The authenticated Box account still needs permission to access that folder.
 

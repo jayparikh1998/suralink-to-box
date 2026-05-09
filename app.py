@@ -314,6 +314,17 @@ def load_box_child_folder_picker_options(
     return picker_options
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def load_box_account_context() -> dict[str, str]:
+    client = get_box_client(settings=settings)
+    current_user = client.users.get_user_me(fields=["id", "name", "login"])
+    return {
+        "id": str(getattr(current_user, "id", "") or ""),
+        "name": str(getattr(current_user, "name", "") or ""),
+        "login": str(getattr(current_user, "login", "") or ""),
+    }
+
+
 header_logo_col, header_title_col = st.columns([1, 6], vertical_alignment="center")
 with header_logo_col:
     if app_logo_path.exists():
@@ -326,6 +337,31 @@ st.caption(
     f"`{configured_base_box_path or 'Box root'}`. "
     "Choose an existing folder under this base root to avoid typos and accidental folder creation."
 )
+
+box_auth_method = (settings.box_auth_method or "").strip().lower()
+box_as_user_id = (settings.box_as_user_id or "").strip()
+try:
+    box_account_context = load_box_account_context()
+except Exception as exc:
+    st.warning(f"Could not inspect the current Box account: {type(exc).__name__}: {exc}")
+else:
+    box_account_label = box_account_context["name"] or box_account_context["login"] or "Unknown Box account"
+    box_account_login = box_account_context["login"]
+    box_account_login_detail = f" ({box_account_login})" if box_account_login else ""
+    box_account_detail = (
+        f"{box_account_label}"
+        f"{box_account_login_detail}"
+        f" [id={box_account_context['id']}]"
+    )
+    if box_auth_method == "jwt" and not box_as_user_id:
+        st.warning(
+            "JWT is using the Box app service account. "
+            f"Folder browsing and uploads use that account's root: {box_account_detail}. "
+            "Set BOX_AS_USER_ID to a managed user's Box ID to browse and upload in that user's Box."
+        )
+    else:
+        st.caption(f"Authenticated Box account: `{box_account_detail}`")
+
 utility_col1, utility_col2 = st.columns([1, 1])
 with utility_col1:
     refresh_folders = st.button("Refresh Box Folders")
