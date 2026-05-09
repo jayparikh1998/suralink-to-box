@@ -540,16 +540,28 @@ def sync_to_box(
         # Priority: single engagement ID > single engagement name > client id > customer custom ID > customer name > fallback
         if configured_engagement_id:
             log("1) Use engagement from settings")
-            selected_engagements = [{"id": configured_engagement_id, "name": f"engagement_{configured_engagement_id}"}]
+            selected_engagements = [
+                {
+                    "id": configured_engagement_id,
+                    "name": configured_engagement_name or f"engagement_{configured_engagement_id}",
+                }
+            ]
 
             # Best effort: resolve friendly name.
             try:
-                for engagement in client.list_engagements():
+                candidate_engagements = client.list_all_engagements()
+                if configured_client_id:
+                    candidate_engagements = [
+                        *client.list_client_engagements(configured_client_id),
+                        *candidate_engagements,
+                    ]
+
+                for engagement in candidate_engagements:
                     if _pick_id(engagement, ["id"]) == configured_engagement_id:
                         selected_engagements = [engagement]
                         break
-            except Exception:
-                pass
+            except Exception as e:
+                log(f"Could not resolve friendly engagement name from Suralink: {type(e).__name__}: {e}")
 
         elif configured_engagement_name:
             log("1) Resolve engagement by name from settings")
