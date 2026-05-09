@@ -1,10 +1,12 @@
 from dataclasses import dataclass
+from io import BytesIO
 
 from suralink_to_box.settings import get_settings
 from suralink_to_box.suralink_client import SuralinkClient
 from suralink_to_box.box_client import (
     find_box_file_in_folder,
     get_box_client,
+    upload_bytes_to_box,
     upload_stream_to_box,
     upload_stream_to_box_version,
     ensure_box_subfolder,
@@ -245,6 +247,14 @@ def _build_archived_file_name(file_name: str, suralink_file_id: str) -> str:
     if dot:
         return f"{stem}{suffix}.{extension}"
     return f"{file_name}{suffix}"
+
+
+def _build_comments_doc_name(client_name: str) -> str:
+    safe_name = _box_safe_folder_name(
+        f"Suralink Comments - {client_name}",
+        fallback="Suralink Comments",
+    )
+    return f"{safe_name}.docx"
 
 
 def _fetch_all_requests(client: SuralinkClient, engagement_id: str) -> list[dict]:
@@ -780,6 +790,28 @@ def sync_to_box(
         else:
             log(f"Resolved Box destination root: Box root (id={root_folder_id})")
 
+        comments_parent_folder_id = (
+            destination_root.folder_id
+            if destination_root
+            else root_folder_id
+        )
+        comments_client_name = (
+            _resolve_client_folder_name(selected_engagements[0], configured_customer_name)
+            if selected_engagements
+            else "Suralink - unknown_client"
+        )
+        comments_groups = []
+        comments_export_error: Exception | None = None
+        try:
+            from suralink_to_box.comment_export import (
+                build_suralink_comments_docx_from_groups,
+                collect_suralink_comments_for_requests,
+            )
+        except Exception as e:
+            build_suralink_comments_docx_from_groups = None
+            collect_suralink_comments_for_requests = None
+            comments_export_error = e
+
         total_engagements_with_files = 0
         total_files_found = 0
         uploaded_count = 0
@@ -957,6 +989,45 @@ def sync_to_box(
                 if rid:
                     request_map[rid] = request
 
+            approved_comment_request_ids: set[str] = set()
+            for file_obj in files:
+                request_id = str(file_obj.get("requestId") or "")
+                if not request_id:
+                    continue
+                request_obj = request_map.get(request_id)
+                is_approved_for_comments, _ = _is_approved_request(
+                    request_obj=request_obj,
+                    file_obj=file_obj,
+                )
+                if is_approved_for_comments:
+                    approved_comment_request_ids.add(request_id)
+
+            if collect_suralink_comments_for_requests and approved_comment_request_ids:
+                approved_comment_requests = [
+                    request
+                    for request in requests
+                    if (_pick_id(request, ["id"]) or "") in approved_comment_request_ids
+                ]
+                try:
+                    comments_group = collect_suralink_comments_for_requests(
+                        client,
+                        engagement=engagement,
+                        requests=approved_comment_requests,
+                    )
+                except Exception as e:
+                    comments_export_error = e
+                    log(
+                        "Warning: could not collect Suralink comments for approved requests "
+                        f"in engagement {engagement_id}: {type(e).__name__}: {e}"
+                    )
+                else:
+                    if comments_group:
+                        comments_groups.append(comments_group)
+                    log(
+                        "Checked comments for "
+                        f"{len(approved_comment_requests)} approved request(s) in this engagement."
+                    )
+
             log(f"Found {len(files)} file(s) in engagement.")
 
             for index, file_obj in enumerate(files, start=1):
@@ -1126,6 +1197,68 @@ def sync_to_box(
                     else:
                         failed_count += 1
                         log(f"Failed -> {type(e).__name__}: {e}")
+
+        if comments_export_error and not comments_groups:
+            log(
+                "Warning: could not transfer Suralink comments to Box: "
+                f"{type(comments_export_error).__name__}: {comments_export_error}"
+            )
+        elif build_suralink_comments_docx_from_groups and comments_groups:
+            try:
+                comments_client_folder = ensure_box_subfolder(
+                    box_client,
+                    parent_folder_id=comments_parent_folder_id,
+                    folder_name=comments_client_name,
+                )
+                comments_file_name = _build_comments_doc_name(comments_client_name)
+                comments_export = build_suralink_comments_docx_from_groups(
+                    comments_groups,
+                    filename=comments_file_name,
+                )
+                existing_comments_doc = find_box_file_in_folder(
+                    box_client,
+                    folder_id=comments_client_folder.folder_id,
+                    file_name=comments_export.filename,
+                )
+                if existing_comments_doc:
+                    uploaded_comments_doc = upload_stream_to_box_version(
+                        box_client,
+                        file_id=existing_comments_doc.file_id,
+                        file_name=comments_export.filename,
+                        stream=BytesIO(comments_export.docx_bytes),
+                        content_type=(
+                            "application/vnd.openxmlformats-officedocument."
+                            "wordprocessingml.document"
+                        ),
+                        content_length=len(comments_export.docx_bytes),
+                    )
+                    log(
+                        "Uploaded Suralink comments Word document as a new Box version: "
+                        f"{uploaded_comments_doc.file_name} "
+                        f"(file id={uploaded_comments_doc.file_id})"
+                    )
+                else:
+                    uploaded_comments_doc = upload_bytes_to_box(
+                        box_client,
+                        folder_id=comments_client_folder.folder_id,
+                        file_name=comments_export.filename,
+                        content=comments_export.docx_bytes,
+                    )
+                    log(
+                        "Uploaded Suralink comments Word document: "
+                        f"{uploaded_comments_doc.file_name} "
+                        f"(file id={uploaded_comments_doc.file_id})"
+                    )
+                log(
+                    "Suralink comments included for approved files only: "
+                    f"{comments_export.comment_count} comment(s), "
+                    f"{comments_export.request_count} request(s), "
+                    f"{comments_export.engagement_count} engagement(s)."
+                )
+            except Exception as e:
+                log(f"Warning: could not transfer Suralink comments to Box: {type(e).__name__}: {e}")
+        else:
+            log("No Suralink comments found for approved files in the selected source.")
 
         log("\nSync summary")
         log(f"Engagements selected: {len(selected_engagements)}")

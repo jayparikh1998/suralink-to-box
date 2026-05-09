@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     suralink_customer_custom_id: str | None = None
     suralink_client_id: str | None = None
     suralink_active_engagements_only: bool = False
+    suralink_browser_access_token: str | None = None
+    suralink_organization_id: str | None = None
+    suralink_request_list_id: str | None = None
 
     # Box
     box_client_id: str | None = None

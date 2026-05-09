@@ -752,7 +752,8 @@ options_label = (
     f"Structure: `{structure_label}` | "
     f"Status: `{approved_label}` | "
     f"Overwrite existing: `{overwrite_label}` | "
-    f"Mirror removals: `{'Enabled' if box_mirror_mode else 'Disabled'}`"
+    f"Mirror removals: `{'Enabled' if box_mirror_mode else 'Disabled'}` | "
+    "Comments: `Approved files only`"
 )
 
 preflight_col1, preflight_col2, preflight_col3 = st.columns(3)

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+import jwt
 from box_sdk_gen.internal.utils import ResponseByteStream
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -83,6 +84,95 @@ class SuralinkClient:
         resp = self._client.get(url, follow_redirects=True)
         resp.raise_for_status()
         return resp.json()
+
+    def _browser_access_token(self) -> str:
+        token = (getattr(self.settings, "suralink_browser_access_token", None) or "").strip()
+        if token.startswith("Bearer "):
+            token = token.removeprefix("Bearer ").strip()
+        return token
+
+    def _browser_jwt_claim(self, *names: str) -> str:
+        token = self._browser_access_token()
+        if not token:
+            return ""
+        try:
+            claims = jwt.decode(token, options={"verify_signature": False})
+        except Exception:
+            return ""
+        for name in names:
+            value = claims.get(name)
+            if value not in (None, ""):
+                return str(value)
+        return ""
+
+    def _v2_query_context(self) -> dict[str, str]:
+        organization_id = (
+            (getattr(self.settings, "suralink_organization_id", None) or "").strip()
+            or self._browser_jwt_claim("organizationId", "orgId", "organization_id")
+        )
+        request_list_id = (getattr(self.settings, "suralink_request_list_id", None) or "").strip()
+
+        params: dict[str, str] = {}
+        if organization_id:
+            params["organizationId"] = organization_id
+        if request_list_id:
+            params["requestListId"] = request_list_id
+        return params
+
+    def get_v2_json(
+        self,
+        path: str,
+        *,
+        params: dict[str, str] | None = None,
+        include_context: bool = True,
+    ):
+        token = self._browser_access_token()
+        if not token:
+            raise ValueError(
+                "Missing SURALINK_BROWSER_ACCESS_TOKEN. "
+                "Suralink Activity comments use v2 endpoints that require the browser access_token cookie."
+            )
+
+        merged_params = self._v2_query_context() if include_context else {}
+        if params:
+            merged_params.update(params)
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Cookie": f"access_token={token}",
+            "Accept": "application/json",
+        }
+        url = self._normalize_path(path)
+        resp = self._client.get(
+            url,
+            params=merged_params,
+            headers=headers,
+            follow_redirects=True,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def list_request_history(
+        self,
+        request_item_id: str,
+        *,
+        request_list_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ):
+        params = {"limit": str(limit), "offset": str(offset)}
+        if request_list_id:
+            params["requestListId"] = str(request_list_id)
+
+        payload = self.get_v2_json(
+            f"/v2/request/{request_item_id}/history",
+            params=params,
+        )
+        if isinstance(payload, dict):
+            events = payload.get("events")
+            if isinstance(events, list):
+                return events
+        return self._unwrap_list_response(payload)
 
     def probe(self, path: str) -> tuple[int, str, str]:
         """
