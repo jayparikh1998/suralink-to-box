@@ -1,3 +1,20 @@
+Metadata-Version: 2.4
+Name: suralink-to-box
+Version: 0.1.0
+Summary: Add your description here
+Requires-Python: >=3.14
+Description-Content-Type: text/markdown
+Requires-Dist: box-sdk-gen>=1.17.0
+Requires-Dist: cryptography>=46.0.1
+Requires-Dist: httpx>=0.28.1
+Requires-Dist: pyjwt>=2.10.1
+Requires-Dist: pydantic>=2.12.5
+Requires-Dist: pydantic-settings>=2.13.1
+Requires-Dist: python-dotenv>=1.2.2
+Requires-Dist: rich>=14.3.3
+Requires-Dist: streamlit>=1.45.1
+Requires-Dist: tenacity>=9.1.4
+
 # suralink-to-box
 
 Sync files from Suralink into Box.

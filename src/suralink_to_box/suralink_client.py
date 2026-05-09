@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+from box_sdk_gen.internal.utils import ResponseByteStream
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from suralink_to_box.settings import Settings
@@ -14,6 +16,14 @@ class DownloadedFile:
     filename: str
     content_type: str
     data: bytes
+
+
+@dataclass
+class StreamedDownloadedFile:
+    filename: str
+    content_type: str
+    content_length: int | None
+    stream: ResponseByteStream
 
 
 class SuralinkClient:
@@ -164,11 +174,18 @@ class SuralinkClient:
 
         return clients
 
+    def list_client_engagements(self, client_id: str):
+        payload = self.get_json(f"/v1/clients/{client_id}/engagements")
+        return self._unwrap_list_response(payload)
+
     def list_requests(self, engagement_id: str, *, limit: int = 50, offset: int = 0):
         payload = self.get_json(
             f"/v1/engagements/{engagement_id}/request-item?limit={limit}&offset={offset}"
         )
         return self._unwrap_list_response(payload)
+
+    def get_request_item_detail(self, engagement_id: str, request_id: str):
+        return self.get_json(f"/v1/engagements/{engagement_id}/request-item/{request_id}")
 
     def list_engagement_files(self, engagement_id: str, *, limit: int = 50, offset: int = 0):
         payload = self.get_json(
@@ -182,6 +199,58 @@ class SuralinkClient:
             part = cd.split("filename=", 1)[1].strip()
             return part.strip('"').strip("'")
         return fallback
+
+    @contextmanager
+    def stream_engagement_file(
+        self,
+        *,
+        audit_id: str,
+        request_id: str,
+        file_id: str,
+        fallback_filename: str = "document.bin",
+    ):
+        url = self._normalize_path(
+            f"/v1/files/engagement?auditId={audit_id}&requestId={request_id}&fileId={file_id}"
+        )
+        with self._client.stream("GET", url, follow_redirects=True) as resp:
+            if resp.status_code in (403, 404):
+                ct = resp.headers.get("content-type", "")
+                snippet = (
+                    resp.read()[:500].decode("utf-8", errors="replace")
+                    if ("text" in ct or "json" in ct or ct == "")
+                    else "<non-text response>"
+                )
+                raise httpx.HTTPStatusError(
+                    message=(
+                        f"HTTP {resp.status_code} for {resp.request.url}. "
+                        f"Content-Type={ct}. Body starts with: {snippet}"
+                    ),
+                    request=resp.request,
+                    response=resp,
+                )
+
+            resp.raise_for_status()
+
+            content_type = resp.headers.get("content-type", "application/octet-stream")
+            if "application/json" in content_type.lower():
+                snippet = resp.read()[:500].decode("utf-8", errors="replace")
+                raise ValueError(
+                    "Download endpoint returned JSON, not a file. "
+                    f"Body starts with: {snippet}"
+                )
+
+            content_length_header = resp.headers.get("content-length")
+            try:
+                content_length = int(content_length_header) if content_length_header else None
+            except ValueError:
+                content_length = None
+
+            yield StreamedDownloadedFile(
+                filename=self._guess_filename(resp, fallback_filename),
+                content_type=content_type,
+                content_length=content_length,
+                stream=ResponseByteStream(resp.iter_bytes()),
+            )
 
     @retry(wait=wait_exponential(min=1, max=10), stop=stop_after_attempt(3), reraise=True)
     def download_engagement_file(
