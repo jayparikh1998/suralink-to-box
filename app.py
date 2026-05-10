@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import streamlit as st
 
@@ -27,7 +28,21 @@ st.set_page_config(
 settings = get_settings()
 configured_base_box_path = (settings.box_target_folder_path or "").strip()
 configured_root_folder_id = (settings.box_target_folder_id or "0").strip() or "0"
-app_logo_path = Path("logo/s&a-logo.png")
+
+
+def _resource_path(relative_path: str) -> Path:
+    candidates = [
+        Path.cwd() / relative_path,
+        Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / relative_path,
+        Path(__file__).resolve().parent / relative_path,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+app_logo_path = _resource_path("logo/s&a-logo.png")
 
 
 def _pick_client_name(client_obj: dict) -> str:
